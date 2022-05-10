@@ -8,6 +8,7 @@
  ***********************************************************/
 
 #include "dlo/odom.h"
+#include <tf/transform_listener.h>
 
 std::atomic<bool> dlo::OdomNode::abort_(false);
 
@@ -193,8 +194,8 @@ void dlo::OdomNode::getParams() {
   ns.erase(0,1);
 
   // Concatenate Frame Name Strings
-  this->odom_frame = ns + "/" + this->odom_frame;
-  this->child_frame = ns + "/" + this->child_frame;
+  // this->odom_frame = ns + "/" + this->odom_frame;
+  // this->child_frame = ns + "/" + this->child_frame;
 
   // Gravity alignment
   ros::param::param<bool>("~dlo/gravityAlign", this->gravity_align_, false);
@@ -257,6 +258,24 @@ void dlo::OdomNode::getParams() {
   ros::param::param<int>("~dlo/odomNode/gicp/s2m/ransac/iterations", this->gicps2m_ransac_iter_, 0);
   ros::param::param<double>("~dlo/odomNode/gicp/s2m/ransac/outlierRejectionThresh", this->gicps2m_ransac_inlier_thresh_, 0.05);
 
+  std::string lidar_frame;
+  ros::param::param<std::string>("~dlo/odomNode/lidarFrame", lidar_frame, "velodyne_frame");
+
+  tf::TransformListener tf_listener;
+  tf::StampedTransform transform;
+  try
+  {
+    tf_listener.waitForTransform(lidar_frame, "base_link", ros::Time(0), ros::Duration(5.0));
+    tf_listener.lookupTransform(lidar_frame, "base_link", ros::Time(0), transform);
+  }
+  catch (tf::TransformException ex)
+  {
+    ROS_ERROR_STREAM("Cannot get transform [base_link->" << lidar_frame << "]. Error: [" << ex.what() << "]");
+  }
+
+  transform.setOrigin({0.0, 0.0, 0.0});
+  tf::transformTFToEigen(transform, baselink_tf_lidar_);
+
 }
 
 
@@ -267,7 +286,7 @@ void dlo::OdomNode::getParams() {
 void dlo::OdomNode::start() {
   ROS_INFO("Starting DLO Odometry Node");
 
-  printf("\033[2J\033[1;1H");
+  // printf("\033[2J\033[1;1H");
   std::cout << std::endl << "==== Direct LiDAR Odometry v" << this->version_ << " ====" << std::endl << std::endl;
 
 }
@@ -633,12 +652,16 @@ void dlo::OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc) {
   this->curr_frame_stamp = pc->header.stamp.toSec();
 
   // If there are too few points in the pointcloud, try again
-  this->current_scan = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
-  pcl::fromROSMsg(*pc, *this->current_scan);
-  if (this->current_scan->points.size() < this->gicp_min_num_points_) {
+  pcl::PointCloud<PointType>::Ptr raw_scan = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+  pcl::fromROSMsg(*pc, *raw_scan);
+  if (raw_scan->points.size() < this->gicp_min_num_points_) {
     ROS_WARN("Low number of points!");
     return;
   }
+
+  // Unrotate point cloud to align with base-link
+  this->current_scan = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+  pcl::transformPointCloud(*raw_scan, *(this->current_scan), baselink_tf_lidar_.inverse().matrix());
 
   // DLO Initialization procedures (IMU calib, gravity align)
   if (!this->dlo_initialized) {
@@ -898,7 +921,7 @@ void dlo::OdomNode::integrateIMU() {
     curr_imu_stamp = imu_frame[i].stamp;
     dt = curr_imu_stamp - prev_imu_stamp;
     prev_imu_stamp = curr_imu_stamp;
-    
+
     // Relative gyro propagation quaternion dynamics
     Eigen::Quaternionf qq = q;
     q.w() -= 0.5*( qq.x()*imu_frame[i].ang_vel.x + qq.y()*imu_frame[i].ang_vel.y + qq.z()*imu_frame[i].ang_vel.z ) * dt;
@@ -1403,22 +1426,22 @@ void dlo::OdomNode::debug() {
   double avg_cpu_usage = std::accumulate(this->cpu_percents.begin(), this->cpu_percents.end(), 0.0) / this->cpu_percents.size();
 
   // Print to terminal
-  printf("\033[2J\033[1;1H");
+  // printf("\033[2J\033[1;1H");
 
-  std::cout << std::endl << "==== Direct LiDAR Odometry v" << this->version_ << " ====" << std::endl;
+  // std::cout << std::endl << "==== Direct LiDAR Odometry v" << this->version_ << " ====" << std::endl;
 
-  std::cout << std::endl << this->cpu_type << " x " << this->numProcessors << std::endl;
+  // std::cout << std::endl << this->cpu_type << " x " << this->numProcessors << std::endl;
 
-  std::cout << std::endl << std::setprecision(4) << std::fixed;
-  std::cout << "Position    [xyz]  :: " << this->pose[0] << " " << this->pose[1] << " " << this->pose[2] << std::endl;
-  std::cout << "Orientation [wxyz] :: " << this->rotq.w() << " " << this->rotq.x() << " " << this->rotq.y() << " " << this->rotq.z() << std::endl;
-  std::cout << "Distance Traveled  :: " << length_traversed << " meters" << std::endl;
-  std::cout << "Distance to Origin :: " << sqrt(pow(this->pose[0]-this->origin[0],2) + pow(this->pose[1]-this->origin[1],2) + pow(this->pose[2]-this->origin[2],2)) << " meters" << std::endl;
+  // std::cout << std::endl << std::setprecision(4) << std::fixed;
+  // std::cout << "Position    [xyz]  :: " << this->pose[0] << " " << this->pose[1] << " " << this->pose[2] << std::endl;
+  // std::cout << "Orientation [wxyz] :: " << this->rotq.w() << " " << this->rotq.x() << " " << this->rotq.y() << " " << this->rotq.z() << std::endl;
+  // std::cout << "Distance Traveled  :: " << length_traversed << " meters" << std::endl;
+  // std::cout << "Distance to Origin :: " << sqrt(pow(this->pose[0]-this->origin[0],2) + pow(this->pose[1]-this->origin[1],2) + pow(this->pose[2]-this->origin[2],2)) << " meters" << std::endl;
 
-  std::cout << std::endl << std::right << std::setprecision(2) << std::fixed;
-  std::cout << "Computation Time :: " << std::setfill(' ') << std::setw(6) << this->comp_times.back()*1000. << " ms    // Avg: " << std::setw(5) << avg_comp_time*1000. << std::endl;
-  std::cout << "Cores Utilized   :: " << std::setfill(' ') << std::setw(6) << (cpu_percent/100.) * this->numProcessors << " cores // Avg: " << std::setw(5) << (avg_cpu_usage/100.) * this->numProcessors << std::endl;
-  std::cout << "CPU Load         :: " << std::setfill(' ') << std::setw(6) << cpu_percent << " %     // Avg: " << std::setw(5) << avg_cpu_usage << std::endl;
-  std::cout << "RAM Allocation   :: " << std::setfill(' ') << std::setw(6) << resident_set/1000. << " MB    // VSZ: " << vm_usage/1000. << " MB" << std::endl;
+  // std::cout << std::endl << std::right << std::setprecision(2) << std::fixed;
+  // std::cout << "Computation Time :: " << std::setfill(' ') << std::setw(6) << this->comp_times.back()*1000. << " ms    // Avg: " << std::setw(5) << avg_comp_time*1000. << std::endl;
+  // std::cout << "Cores Utilized   :: " << std::setfill(' ') << std::setw(6) << (cpu_percent/100.) * this->numProcessors << " cores // Avg: " << std::setw(5) << (avg_cpu_usage/100.) * this->numProcessors << std::endl;
+  // std::cout << "CPU Load         :: " << std::setfill(' ') << std::setw(6) << cpu_percent << " %     // Avg: " << std::setw(5) << avg_cpu_usage << std::endl;
+  // std::cout << "RAM Allocation   :: " << std::setfill(' ') << std::setw(6) << resident_set/1000. << " MB    // VSZ: " << vm_usage/1000. << " MB" << std::endl;
 
 }

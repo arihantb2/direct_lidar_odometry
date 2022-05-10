@@ -10,6 +10,7 @@
 dlo:
 
   odomNode:
+    lidarFrame: velodyne_frame
 
     initialPose:
       use: false

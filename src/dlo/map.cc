@@ -22,7 +22,7 @@ dlo::MapNode::MapNode(ros::NodeHandle node_handle) : nh(node_handle) {
 
   this->abort_timer = this->nh.createTimer(ros::Duration(0.01), &dlo::MapNode::abortTimerCB, this);
   this->publish_timer = this->nh.createTimer(ros::Duration(this->publish_freq_), &dlo::MapNode::publishTimerCB, this);
-  
+
   this->keyframe_sub = this->nh.subscribe("keyframes", 1, &dlo::MapNode::keyframeCB, this);
   this->map_pub = this->nh.advertise<sensor_msgs::PointCloud2>("map", 1);
 
@@ -56,7 +56,7 @@ void dlo::MapNode::getParams() {
   ns.erase(0,1);
 
   // Concatenate Frame Name Strings
-  this->odom_frame = ns + "/" + this->odom_frame;
+  // this->odom_frame = ns + "/" + this->odom_frame;
 
 }
 
@@ -110,7 +110,7 @@ void dlo::MapNode::publishTimerCB(const ros::TimerEvent& e) {
     map_ros.header.frame_id = this->odom_frame;
     this->map_pub.publish(map_ros);
   }
-  
+
 }
 
 
