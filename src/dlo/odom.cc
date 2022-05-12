@@ -31,8 +31,9 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
 
   this->icp_sub = this->nh.subscribe("pointcloud", 1, &dlo::OdomNode::icpCB, this);
   this->imu_sub = this->nh.subscribe("imu", 1, &dlo::OdomNode::imuCB, this);
+  this->odom_sub = this->nh.subscribe("/odom", 1, &dlo::OdomNode::odomCB, this);
 
-  this->odom_pub = this->nh.advertise<nav_msgs::Odometry>("odom", 1);
+  this->lidar_odom_pub = this->nh.advertise<nav_msgs::Odometry>("odom", 1);
   this->pose_pub = this->nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
   this->kf_pub = this->nh.advertise<nav_msgs::Odometry>("kfs", 1, true);
   this->keyframe_pub = this->nh.advertise<sensor_msgs::PointCloud2>("keyframe", 1, true);
@@ -77,6 +78,18 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle) {
 
   this->imu_buffer.set_capacity(this->imu_buffer_size_);
   this->first_imu_time = 0.;
+
+  this->odom_SE3 = Eigen::Matrix4f::Identity();
+
+  this->odom_meas.stamp = 0.;
+  this->odom_meas.lin_vel.x = 0.;
+  this->odom_meas.lin_vel.y = 0.;
+  this->odom_meas.lin_vel.z = 0.;
+  this->odom_meas.ang_vel.x = 0.;
+  this->odom_meas.ang_vel.y = 0.;
+  this->odom_meas.ang_vel.z = 0.;
+
+  this->odom_buffer.set_capacity(this->odom_buffer_size_);
 
   this->original_scan = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
   this->current_scan = pcl::PointCloud<PointType>::Ptr (new pcl::PointCloud<PointType>);
@@ -236,6 +249,10 @@ void dlo::OdomNode::getParams() {
   // Adaptive Parameters
   ros::param::param<bool>("~dlo/adaptiveParams", this->adaptive_params_use_, false);
 
+  // Odom
+  ros::param::param<bool>("~dlo/odom", this->odom_use_, false);
+  ros::param::param<int>("~dlo/odomNode/odom/bufferSize", this->odom_buffer_size_, 2000);
+
   // IMU
   ros::param::param<bool>("~dlo/imu", this->imu_use_, false);
   ros::param::param<int>("~dlo/odomNode/imu/calibTime", this->imu_calib_time_, 3);
@@ -376,7 +393,7 @@ void dlo::OdomNode::publishPose() {
   this->odom.header.stamp = this->scan_stamp;
   this->odom.header.frame_id = this->odom_frame;
   this->odom.child_frame_id = this->child_frame;
-  this->odom_pub.publish(this->odom);
+  this->lidar_odom_pub.publish(this->odom);
 
   this->pose_ros.header.stamp = this->scan_stamp;
   this->pose_ros.header.frame_id = this->odom_frame;
@@ -721,6 +738,31 @@ void dlo::OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc) {
 
 
 /**
+ * Odom Callback
+ **/
+
+void dlo::OdomNode::odomCB(const nav_msgs::Odometry::ConstPtr& odom)
+{
+  if (!this->odom_use_) {
+    return;
+  }
+
+  this->odom_meas.stamp = odom->header.stamp.toSec();
+
+  this->odom_meas.lin_vel.x = odom->twist.twist.linear.x;
+  this->odom_meas.lin_vel.y = odom->twist.twist.linear.y;
+  this->odom_meas.lin_vel.z = odom->twist.twist.linear.z;
+
+  this->odom_meas.ang_vel.x = odom->twist.twist.angular.x;
+  this->odom_meas.ang_vel.y = odom->twist.twist.angular.y;
+  this->odom_meas.ang_vel.z = odom->twist.twist.angular.z;
+
+  this->mtx_odom.lock();
+  this->odom_buffer.push_front(this->odom_meas);
+  this->mtx_odom.unlock();
+}
+
+/**
  * IMU Callback
  **/
 
@@ -824,6 +866,9 @@ void dlo::OdomNode::getNextPose() {
   if (this->imu_use_) {
     this->integrateIMU();
     this->gicp_s2s.align(*aligned, this->imu_SE3);
+  } else if (this->odom_use_) {
+    this->integrateOdom();
+    this->gicp_s2s.align(*aligned, this->odom_SE3);
   } else {
     this->gicp_s2s.align(*aligned);
   }
@@ -874,6 +919,78 @@ void dlo::OdomNode::getNextPose() {
 
 }
 
+/**
+ * Integrate Odom
+ **/
+
+void dlo::OdomNode::integrateOdom() {
+
+  // Extract odom data between the two frames
+  std::vector<OdomMeas> odom_frame;
+
+  for (const auto& o : this->odom_buffer) {
+
+    // Odom data between two frames is when:
+    //   current frame's timestamp minus odom timestamp is positive
+    //   previous frame's timestamp minus odom timestamp is negative
+    double curr_frame_odom_dt = this->curr_frame_stamp - o.stamp;
+    double prev_frame_odom_dt = this->prev_frame_stamp - o.stamp;
+
+    if (curr_frame_odom_dt >= 0. && prev_frame_odom_dt <= 0.) {
+
+      odom_frame.push_back(o);
+
+    }
+  }
+
+  // Sort measurements by time
+  std::sort(odom_frame.begin(), odom_frame.end(), this->comparatorMeas);
+
+  // Relative Odom integration of gyro and accelerometer
+  double curr_odom_stamp = 0.;
+  double prev_odom_stamp = 0.;
+  double dt;
+
+  Eigen::Quaternionf q = Eigen::Quaternionf::Identity();
+  Eigen::Vector3f t = Eigen::Vector3f::Identity();
+
+  for (uint32_t i = 0; i < odom_frame.size(); ++i) {
+
+    if (prev_odom_stamp == 0.) {
+      prev_odom_stamp = odom_frame[i].stamp;
+      continue;
+    }
+
+    // Calculate difference in odom measurement times IN SECONDS
+    curr_odom_stamp = odom_frame[i].stamp;
+    dt = curr_odom_stamp - prev_odom_stamp;
+    prev_odom_stamp = curr_odom_stamp;
+
+    // Relative gyro propagation quaternion dynamics
+    Eigen::Quaternionf qq = q;
+    q.w() -= 0.5*( qq.x()*odom_frame[i].ang_vel.x + qq.y()*odom_frame[i].ang_vel.y + qq.z()*odom_frame[i].ang_vel.z ) * dt;
+    q.x() += 0.5*( qq.w()*odom_frame[i].ang_vel.x - qq.z()*odom_frame[i].ang_vel.y + qq.y()*odom_frame[i].ang_vel.z ) * dt;
+    q.y() += 0.5*( qq.z()*odom_frame[i].ang_vel.x + qq.w()*odom_frame[i].ang_vel.y - qq.x()*odom_frame[i].ang_vel.z ) * dt;
+    q.z() += 0.5*( qq.x()*odom_frame[i].ang_vel.y - qq.y()*odom_frame[i].ang_vel.x + qq.w()*odom_frame[i].ang_vel.z ) * dt;
+
+    Eigen::Vector3f tt = t;
+    t.x() += tt.x() + odom_frame[i].lin_vel.x * dt;
+    t.y() += tt.y() + odom_frame[i].lin_vel.y * dt;
+    t.z() += tt.z() + odom_frame[i].lin_vel.z * dt;
+
+  }
+
+  // Normalize quaternion
+  double norm = sqrt(q.w()*q.w() + q.x()*q.x() + q.y()*q.y() + q.z()*q.z());
+  q.w() /= norm; q.x() /= norm; q.y() /= norm; q.z() /= norm;
+
+  // Store Odom guess
+  this->odom_SE3 = Eigen::Matrix4f::Identity();
+  this->odom_SE3.block<3, 3>(0, 0) = q.toRotationMatrix();
+  this->odom_SE3.block<3, 1>(3, 0) = t;
+
+}
+
 
 /**
  * Integrate IMU
@@ -901,7 +1018,7 @@ void dlo::OdomNode::integrateIMU() {
   }
 
   // Sort measurements by time
-  std::sort(imu_frame.begin(), imu_frame.end(), this->comparatorImu);
+  std::sort(imu_frame.begin(), imu_frame.end(), this->comparatorMeas);
 
   // Relative IMU integration of gyro and accelerometer
   double curr_imu_stamp = 0.;

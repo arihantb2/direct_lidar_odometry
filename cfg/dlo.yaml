@@ -13,6 +13,7 @@ dlo:
 
   adaptiveParams: true
 
+  odom: false
   imu: true
   gravityAlign: true
 

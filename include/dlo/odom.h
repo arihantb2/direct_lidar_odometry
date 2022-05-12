@@ -8,8 +8,6 @@
  ***********************************************************/
 
 #include "dlo/dlo.h"
-#include <tf/transform_datatypes.h>
-#include <tf_conversions/tf_eigen.h>
 
 class dlo::OdomNode {
 
@@ -30,6 +28,7 @@ private:
   void abortTimerCB(const ros::TimerEvent& e);
   void icpCB(const sensor_msgs::PointCloud2ConstPtr& pc);
   void imuCB(const sensor_msgs::Imu::ConstPtr& imu);
+  void odomCB(const nav_msgs::Odometry::ConstPtr& odom);
 
   void getParams();
 
@@ -47,6 +46,7 @@ private:
 
   void getNextPose();
   void integrateIMU();
+  void integrateOdom();
 
   void propagateS2S(Eigen::Matrix4f T);
   void propagateS2M();
@@ -72,8 +72,9 @@ private:
 
   ros::Subscriber icp_sub;
   ros::Subscriber imu_sub;
+  ros::Subscriber odom_sub;
 
-  ros::Publisher odom_pub;
+  ros::Publisher lidar_odom_pub;
   ros::Publisher pose_pub;
   ros::Publisher keyframe_pub;
   ros::Publisher kf_pub;
@@ -143,6 +144,7 @@ private:
   Eigen::Quaternionf rotq;
 
   Eigen::Matrix4f imu_SE3;
+  Eigen::Matrix4f odom_SE3;
 
   struct XYZd {
     double x;
@@ -157,17 +159,27 @@ private:
 
   ImuBias imu_bias;
 
-  struct ImuMeas {
+  struct Meas {
     double stamp;
+  };
+
+  struct ImuMeas : public Meas {
     XYZd ang_vel;
     XYZd lin_accel;
   };
 
+  struct OdomMeas : public Meas {
+    XYZd lin_vel;
+    XYZd ang_vel;
+  };
+
   ImuMeas imu_meas;
+  OdomMeas odom_meas;
 
   boost::circular_buffer<ImuMeas> imu_buffer;
+  boost::circular_buffer<OdomMeas> odom_buffer;
 
-  static bool comparatorImu(ImuMeas m1, ImuMeas m2) {
+  static bool comparatorMeas(Meas m1, Meas m2) {
     return (m1.stamp < m2.stamp);
   };
 
@@ -189,6 +201,7 @@ private:
   std::thread debug_thread;
 
   std::mutex mtx_imu;
+  std::mutex mtx_odom;
 
   std::string cpu_type;
   std::vector<double> cpu_percents;
@@ -225,6 +238,9 @@ private:
 
   bool adaptive_params_use_;
 
+  bool odom_use_;
+  int odom_buffer_size_;
+
   bool imu_use_;
   int imu_calib_time_;
   int imu_buffer_size_;
@@ -248,24 +264,3 @@ private:
   double gicps2m_ransac_inlier_thresh_;
 
 };
-
-namespace dlo
-{
-  static pcl::PointCloud<PointType> transformPointCloud(const pcl::PointCloud<PointType>& cloud, const Eigen::Affine3f& transform)
-  {
-      pcl::PointCloud<PointType> result_cloud;
-      result_cloud.resize(cloud.size());
-
-      for (size_t i = 0U; i < cloud.size(); ++i)
-      {
-          const auto& point = cloud.points[i];
-
-          result_cloud.points[i].x = transform(0, 0) * point.x + transform(0, 1) * point.y + transform(0, 2) * point.z + transform(0, 3);
-          result_cloud.points[i].y = transform(1, 0) * point.x + transform(1, 1) * point.y + transform(1, 2) * point.z + transform(1, 3);
-          result_cloud.points[i].z = transform(2, 0) * point.x + transform(2, 1) * point.y + transform(2, 2) * point.z + transform(2, 3);
-          result_cloud.points[i].intensity = point.intensity;
-      }
-
-      return result_cloud;
-  }
-}
