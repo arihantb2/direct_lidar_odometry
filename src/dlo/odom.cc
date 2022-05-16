@@ -928,6 +928,7 @@ void dlo::OdomNode::integrateOdom() {
   // Extract odom data between the two frames
   std::vector<OdomMeas> odom_frame;
 
+  this->mtx_odom.lock();
   for (const auto& o : this->odom_buffer) {
 
     // Odom data between two frames is when:
@@ -942,6 +943,7 @@ void dlo::OdomNode::integrateOdom() {
 
     }
   }
+  this->mtx_odom.unlock();
 
   // Sort measurements by time
   std::sort(odom_frame.begin(), odom_frame.end(), this->comparatorMeas);
@@ -952,7 +954,7 @@ void dlo::OdomNode::integrateOdom() {
   double dt;
 
   Eigen::Quaternionf q = Eigen::Quaternionf::Identity();
-  Eigen::Vector3f t = Eigen::Vector3f::Identity();
+  Eigen::Vector3f t = Eigen::Vector3f::Zero();
 
   for (uint32_t i = 0; i < odom_frame.size(); ++i) {
 
@@ -987,7 +989,10 @@ void dlo::OdomNode::integrateOdom() {
   // Store Odom guess
   this->odom_SE3 = Eigen::Matrix4f::Identity();
   this->odom_SE3.block<3, 3>(0, 0) = q.toRotationMatrix();
-  this->odom_SE3.block<3, 1>(3, 0) = t;
+  this->odom_SE3.block<3, 1>(0, 3) = t;
+
+  ROS_DEBUG_STREAM("[OdomNode::integrateOdom]: Odom frame size: " << odom_frame.size());
+  ROS_DEBUG_STREAM("[OdomNode::integrateOdom]: odom_SE3:\n" << this->odom_SE3);
 
 }
 

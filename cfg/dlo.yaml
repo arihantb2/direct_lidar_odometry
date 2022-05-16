@@ -13,8 +13,8 @@ dlo:
 
   adaptiveParams: true
 
-  odom: false
-  imu: true
+  odom: true
+  imu: false
   gravityAlign: true
 
   odomNode:
