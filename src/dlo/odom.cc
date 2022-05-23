@@ -669,16 +669,12 @@ void dlo::OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc) {
   this->curr_frame_stamp = pc->header.stamp.toSec();
 
   // If there are too few points in the pointcloud, try again
-  pcl::PointCloud<PointType>::Ptr raw_scan = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-  pcl::fromROSMsg(*pc, *raw_scan);
-  if (raw_scan->points.size() < this->gicp_min_num_points_) {
+  this->current_scan = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+  pcl::fromROSMsg(*pc, *(this->current_scan));
+  if (this->current_scan->points.size() < this->gicp_min_num_points_) {
     ROS_WARN("Low number of points!");
     return;
   }
-
-  // Unrotate point cloud to align with base-link
-  this->current_scan = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-  pcl::transformPointCloud(*raw_scan, *(this->current_scan), baselink_tf_lidar_.inverse().matrix());
 
   // DLO Initialization procedures (IMU calib, gravity align)
   if (!this->dlo_initialized) {
@@ -688,6 +684,9 @@ void dlo::OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc) {
 
   // Preprocess points
   this->preprocessPoints();
+
+  // Unrotate point cloud to align with base-link
+  pcl::transformPointCloud(*(this->current_scan), *(this->current_scan), baselink_tf_lidar_.inverse().matrix());
 
   // Compute Metrics
   this->metrics_thread = std::thread( &dlo::OdomNode::computeMetrics, this );
