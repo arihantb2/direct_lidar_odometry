@@ -9,45 +9,43 @@
 
 #include "dlo/dlo.h"
 
-class dlo::MapNode {
-
+class dlo::MapNode
+{
 public:
+    MapNode(ros::NodeHandle node_handle);
+    ~MapNode();
 
-  MapNode(ros::NodeHandle node_handle);
-  ~MapNode();
+    static void abort()
+    {
+        abort_ = true;
+    }
 
-  static void abort() {
-    abort_ = true;
-  }
-
-  void start();
-  void stop();
+    void start();
+    void stop();
 
 private:
+    void abortTimerCB(const ros::TimerEvent& e);
+    void publishTimerCB(const ros::TimerEvent& e);
 
-  void abortTimerCB(const ros::TimerEvent& e);
-  void publishTimerCB(const ros::TimerEvent& e);
+    void keyframeCB(const sensor_msgs::PointCloud2ConstPtr& keyframe);
 
-  void keyframeCB(const sensor_msgs::PointCloud2ConstPtr& keyframe);
+    void getParams();
 
-  void getParams();
+    ros::NodeHandle nh;
+    ros::Timer abort_timer;
+    ros::Timer publish_timer;
 
-  ros::NodeHandle nh;
-  ros::Timer abort_timer;
-  ros::Timer publish_timer;
+    ros::Subscriber keyframe_sub;
+    ros::Publisher map_pub;
 
-  ros::Subscriber keyframe_sub;
-  ros::Publisher map_pub;
+    pcl::PointCloud<PointType>::Ptr dlo_map;
+    pcl::VoxelGrid<PointType> voxelgrid;
 
-  pcl::PointCloud<PointType>::Ptr dlo_map;
-  pcl::VoxelGrid<PointType> voxelgrid;
+    ros::Time map_stamp;
+    std::string odom_frame;
 
-  ros::Time map_stamp;
-  std::string odom_frame;
+    double publish_freq_;
+    double leaf_size_;
 
-  double publish_freq_;
-  double leaf_size_;
-
-  static std::atomic<bool> abort_;
-
+    static std::atomic<bool> abort_;
 };

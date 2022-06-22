@@ -51,9 +51,9 @@
 
 typedef pcl::PointXYZI PointType;
 
-namespace dlo {
+namespace dlo
+{
+class OdomNode;
+class MapNode;
 
-  class OdomNode;
-  class MapNode;
-
-}
+}  // namespace dlo
