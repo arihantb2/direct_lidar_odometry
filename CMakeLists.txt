@@ -88,3 +88,8 @@ add_dependencies(dlo_map_node ${catkin_EXPORTED_TARGETS})
 target_compile_options(dlo_map_node PRIVATE ${OpenMP_FLAGS})
 target_link_libraries(dlo_map_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads)
 
+# Tests
+add_executable(test_nano_gicp src/test/test_nano_gicp.cpp)
+add_dependencies(test_nano_gicp ${catkin_EXPORTED_TARGETS})
+target_compile_options(test_nano_gicp PRIVATE ${OpenMP_FLAGS})
+target_link_libraries(test_nano_gicp ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp)
