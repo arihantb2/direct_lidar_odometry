@@ -8,6 +8,7 @@
  ***********************************************************/
 
 #include "dlo/dlo.h"
+#include <er_slam_msgs/Keyframe.h>
 
 class dlo::MapNode
 {
@@ -28,6 +29,7 @@ private:
     void publishTimerCB(const ros::TimerEvent& e);
 
     void keyframeCB(const sensor_msgs::PointCloud2ConstPtr& keyframe);
+    void keyframeFullCB(const er_slam_msgs::Keyframe& keyframe_full);
 
     void getParams();
 
@@ -36,6 +38,7 @@ private:
     ros::Timer publish_timer;
 
     ros::Subscriber keyframe_sub;
+    ros::Subscriber full_keyframe_sub;
     ros::Publisher map_pub;
 
     pcl::PointCloud<PointType>::Ptr dlo_map;

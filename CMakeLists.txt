@@ -41,6 +41,8 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   pcl_ros
   tf_conversions
+  eigen_conversions
+  er_slam_msgs
 )
 
 catkin_package(
@@ -51,6 +53,8 @@ catkin_package(
     geometry_msgs
     pcl_ros
     tf_conversions
+    er_slam_msgs
+    eigen_conversions
   INCLUDE_DIRS
     include
   LIBRARIES
@@ -93,3 +97,7 @@ add_executable(test_nano_gicp src/test/test_nano_gicp.cpp)
 add_dependencies(test_nano_gicp ${catkin_EXPORTED_TARGETS})
 target_compile_options(test_nano_gicp PRIVATE ${OpenMP_FLAGS})
 target_link_libraries(test_nano_gicp ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp)
+
+add_executable(test_transform_point src/test/test_transform_point.cpp)
+add_dependencies(test_transform_point ${catkin_EXPORTED_TARGETS})
+target_link_libraries(test_transform_point ${catkin_LIBRARIES} ${PCL_LIBRARIES})

@@ -8,6 +8,7 @@
  ***********************************************************/
 
 #include "dlo/dlo.h"
+#include <er_slam_msgs/Keyframe.h>
 
 class dlo::OdomNode
 {
@@ -77,6 +78,7 @@ private:
     ros::Publisher pose_pub;
     ros::Publisher keyframe_pub;
     ros::Publisher kf_pub;
+    ros::Publisher full_keyframe_pub;
 
     Eigen::Vector3f origin;
     std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;

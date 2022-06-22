@@ -36,6 +36,7 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
     this->pose_pub = this->nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
     this->kf_pub = this->nh.advertise<nav_msgs::Odometry>("kfs", 1, true);
     this->keyframe_pub = this->nh.advertise<sensor_msgs::PointCloud2>("keyframe", 1, true);
+    this->full_keyframe_pub = this->nh.advertise<er_slam_msgs::Keyframe>("/dlo/keyframe_full", 1, true);
 
     this->odom.pose.pose.position.x = 0.;
     this->odom.pose.pose.position.y = 0.;
@@ -282,16 +283,18 @@ void dlo::OdomNode::getParams()
     tf::StampedTransform transform;
     try
     {
-        tf_listener.waitForTransform(lidar_frame, "base_link", ros::Time(0), ros::Duration(5.0));
-        tf_listener.lookupTransform(lidar_frame, "base_link", ros::Time(0), transform);
+        tf_listener.waitForTransform(child_frame, lidar_frame, ros::Time(0), ros::Duration(5.0));
+        tf_listener.lookupTransform(child_frame, lidar_frame, ros::Time(0), transform);
     }
     catch (tf::TransformException ex)
     {
-        ROS_ERROR_STREAM("Cannot get transform [base_link->" << lidar_frame << "]. Error: [" << ex.what() << "]");
+        ROS_ERROR_STREAM("Cannot get transform [" << child_frame << " -> " << lidar_frame << "]. Error: [" << ex.what() << "]");
     }
 
-    transform.setOrigin({ 0.0, 0.0, 0.0 });
     tf::transformTFToEigen(transform, baselink_tf_lidar_);
+
+    std::cout << "baselink_tf_lidar: [(" << baselink_tf_lidar_.translation().transpose() << "), ("
+              << baselink_tf_lidar_.rotation().eulerAngles(0, 1, 2).transpose() << ")]\n";
 }
 
 /**
@@ -468,6 +471,17 @@ void dlo::OdomNode::publishKeyframe()
         keyframe_cloud_ros.header.stamp = this->scan_stamp;
         keyframe_cloud_ros.header.frame_id = this->odom_frame;
         this->keyframe_pub.publish(keyframe_cloud_ros);
+    }
+
+    {
+        er_slam_msgs::Keyframe keyframe_msg;
+        keyframe_msg.header.stamp = this->scan_stamp;
+        keyframe_msg.header.frame_id = this->odom_frame;
+        keyframe_msg.child_frame_id = this->child_frame;
+        keyframe_msg.pose = this->kf.pose.pose;
+        pcl::toROSMsg(*this->current_scan, keyframe_msg.cloud);
+
+        this->full_keyframe_pub.publish(keyframe_msg);
     }
 }
 
@@ -659,6 +673,26 @@ void dlo::OdomNode::initializeDLO()
 
         std::cout << "done" << std::endl << std::endl;
     }
+    else
+    {
+        std::cout << "Setting identity initial pose... ";
+        std::cout.flush();
+
+        // set known position
+        this->pose.setZero();
+        this->T.block(0, 3, 3, 1) = this->pose;
+        this->T_s2s.block(0, 3, 3, 1) = this->pose;
+        this->T_s2s_prev.block(0, 3, 3, 1) = this->pose;
+        this->origin.setZero();
+
+        // set known orientation
+        this->rotq.setIdentity();
+        this->T.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+        this->T_s2s.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+        this->T_s2s_prev.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+
+        std::cout << "done" << std::endl << std::endl;
+    }
 
     this->dlo_initialized = true;
     std::cout << "DLO initialized! Starting localization..." << std::endl;
@@ -683,6 +717,9 @@ void dlo::OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc)
         return;
     }
 
+    // Unrotate point cloud to align with base-link
+    pcl::transformPointCloud(*(this->current_scan), *(this->current_scan), baselink_tf_lidar_.matrix());
+
     // DLO Initialization procedures (IMU calib, gravity align)
     if (!this->dlo_initialized)
     {
@@ -692,9 +729,6 @@ void dlo::OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc)
 
     // Preprocess points
     this->preprocessPoints();
-
-    // Unrotate point cloud to align with base-link
-    pcl::transformPointCloud(*(this->current_scan), *(this->current_scan), baselink_tf_lidar_.inverse().matrix());
 
     // Compute Metrics
     this->metrics_thread = std::thread(&dlo::OdomNode::computeMetrics, this);
@@ -1421,7 +1455,8 @@ void dlo::OdomNode::getSubmapKeyframes()
 
     for (const auto& k : this->keyframes)
     {
-        float d = sqrt(pow(curr_pose[0] - k.first.first[0], 2) + pow(curr_pose[1] - k.first.first[1], 2) + pow(curr_pose[2] - k.first.first[2], 2));
+        float d = (curr_pose - k.first.first).norm();  // sqrt(pow(curr_pose[0] - k.first.first[0], 2) + pow(curr_pose[1] - k.first.first[1], 2) +
+                                                       // pow(curr_pose[2] - k.first.first[2], 2));
         ds.push_back(d);
         keyframe_nn.push_back(i);
         i++;
@@ -1487,19 +1522,19 @@ void dlo::OdomNode::getSubmapKeyframes()
         this->submap_hasChanged = true;
 
         // reinitialize submap cloud, normals
-        pcl::PointCloud<PointType>::Ptr submap_cloud_(boost::make_shared<pcl::PointCloud<PointType>>());
+        pcl::PointCloud<PointType>::Ptr submap_cloud(new pcl::PointCloud<PointType>);
         this->submap_normals.clear();
 
         for (auto k : this->submap_kf_idx_curr)
         {
             // create current submap cloud
-            *submap_cloud_ += *this->keyframes[k].second;
+            *submap_cloud += *this->keyframes[k].second;
 
             // grab corresponding submap cloud's normals
             this->submap_normals.insert(std::end(this->submap_normals), std::begin(this->keyframe_normals[k]), std::end(this->keyframe_normals[k]));
         }
 
-        this->submap_cloud = submap_cloud_;
+        this->submap_cloud = submap_cloud;
         this->submap_kf_idx_prev = this->submap_kf_idx_curr;
     }
 }

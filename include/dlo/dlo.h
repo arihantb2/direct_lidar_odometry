@@ -22,10 +22,12 @@
 #include <sys/times.h>
 #include <sys/vtimes.h>
 #include <thread>
+#include <queue>
 
 #include <ros/ros.h>
 #include <boost/circular_buffer.hpp>
 #include <boost/algorithm/string.hpp>
+#include <boost/shared_ptr.hpp>
 
 #include <pcl/filters/crop_box.h>
 #include <pcl/filters/voxel_grid.h>

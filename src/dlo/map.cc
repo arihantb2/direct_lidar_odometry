@@ -8,6 +8,7 @@
  ***********************************************************/
 
 #include "dlo/map.h"
+#include <eigen_conversions/eigen_msg.h>
 
 std::atomic<bool> dlo::MapNode::abort_(false);
 
@@ -22,7 +23,8 @@ dlo::MapNode::MapNode(ros::NodeHandle node_handle) : nh(node_handle)
     this->abort_timer = this->nh.createTimer(ros::Duration(0.01), &dlo::MapNode::abortTimerCB, this);
     this->publish_timer = this->nh.createTimer(ros::Duration(this->publish_freq_), &dlo::MapNode::publishTimerCB, this);
 
-    this->keyframe_sub = this->nh.subscribe("keyframes", 1, &dlo::MapNode::keyframeCB, this);
+    // this->keyframe_sub = this->nh.subscribe("keyframes", 1, &dlo::MapNode::keyframeCB, this);
+    this->full_keyframe_sub = this->nh.subscribe("/dlo/keyframe_full", 1, &dlo::MapNode::keyframeFullCB, this);
     this->map_pub = this->nh.advertise<sensor_msgs::PointCloud2>("map", 1);
 
     // initialize map
@@ -122,5 +124,21 @@ void dlo::MapNode::keyframeCB(const sensor_msgs::PointCloud2ConstPtr& keyframe)
 
     // save keyframe to map
     this->map_stamp = keyframe->header.stamp;
+    *this->dlo_map += *keyframe_pcl;
+}
+
+void dlo::MapNode::keyframeFullCB(const er_slam_msgs::Keyframe& keyframe)
+{
+    // convert scan to pcl format
+    pcl::PointCloud<PointType>::Ptr keyframe_pcl = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+    pcl::fromROSMsg(keyframe.cloud, *keyframe_pcl);
+
+    // Transform keyframe to map frame
+    Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
+    tf::poseMsgToEigen(keyframe.pose, pose);
+    pcl::transformPointCloud(*keyframe_pcl, *keyframe_pcl, pose.matrix());
+
+    // save keyframe to map
+    this->map_stamp = keyframe.header.stamp;
     *this->dlo_map += *keyframe_pcl;
 }
