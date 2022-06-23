@@ -9,8 +9,16 @@
 
 #include "dlo/dlo.h"
 #include <er_slam_msgs/Keyframe.h>
+#include <gtsam/nonlinear/ISAM2.h>
+#include <gtsam/nonlinear/NonlinearFactorGraph.h>
+#include <gtsam/nonlinear/Values.h>
+#include <gtsam/slam/BetweenFactor.h>
+#include <gtsam/slam/PriorFactor.h>
+#include <gtsam/geometry/Pose3.h>
 
-class dlo::OdomNode
+namespace dlo
+{
+class OdomNode
 {
 public:
     OdomNode(ros::NodeHandle node_handle);
@@ -63,6 +71,8 @@ private:
     void pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frames);
     void getSubmapKeyframes();
 
+    void optimizeTrajectory();
+
     void debug();
 
     double first_imu_time;
@@ -81,10 +91,24 @@ private:
     ros::Publisher full_keyframe_pub;
     ros::Publisher submap_pub;
 
-    Eigen::Vector3f origin;
-    std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
-    std::vector<std::pair<std::pair<Eigen::Vector3f, Eigen::Quaternionf>, pcl::PointCloud<PointType>::Ptr>> keyframes;
-    std::vector<std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>>> keyframe_normals;
+    struct Keyframe
+    {
+        int id;
+        double timestamp;
+        Eigen::Isometry3f pose;
+        pcl::PointCloud<PointType>::Ptr cloud;
+        std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> normals;
+    };
+
+    std::vector<Eigen::Isometry3f> trajectory;
+    std::map<int, Keyframe> keyframes_map;
+
+    int gtsam_keyframe_id;
+    std::map<int, int> gtsam_kf_id_map;
+    gtsam::ISAM2 isam_solver;
+    gtsam::NonlinearFactorGraph graph;
+    gtsam::Values initial_guess;
+    gtsam::Values optimized_estimate;
 
     std::atomic<bool> dlo_initialized;
     std::atomic<bool> imu_calibrated;
@@ -272,3 +296,4 @@ private:
     int gicps2m_ransac_iter_;
     double gicps2m_ransac_inlier_thresh_;
 };
+}  // namespace dlo

@@ -8,7 +8,7 @@ Panels:
         - /Keyframes1/Shape1
         - /Map1/Autocompute Value Bounds1
       Splitter Ratio: 0.43808048963546753
-    Tree Height: 683
+    Tree Height: 441
   - Class: rviz/Selection
     Name: Selection
   - Class: rviz/Tool Properties
@@ -446,4 +446,4 @@ Window Geometry:
     collapsed: true
   Width: 1440
   X: 1297
-  Y: 518
+  Y: 488

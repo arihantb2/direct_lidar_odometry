@@ -11,7 +11,7 @@ cmake_minimum_required(VERSION 3.10.0)
 project(direct_lidar_odometry)
 
 add_compile_options(-std=c++14)
-set(CMAKE_BUILD_TYPE "Release")
+set(CMAKE_BUILD_TYPE "Debug")
 
 find_package( PCL REQUIRED )
 include_directories(${PCL_INCLUDE_DIRS})
@@ -20,6 +20,11 @@ link_directories(${PCL_LIBRARY_DIRS})
 
 find_package( Eigen3 REQUIRED )
 include_directories(${EIGEN3_INCLUDE_DIR})
+
+find_package( GTSAM REQUIRED )
+include_directories(${GTSAM_INCLUDE_DIR})
+add_definitions(${GTSAM_DEFINITIONS})
+link_directories(${GTSAM_LIBRARY_DIRS})
 
 include(FindOpenMP)
 if(OPENMP_FOUND)
@@ -84,7 +89,7 @@ target_include_directories(nano_gicp PUBLIC include ${PCL_INCLUDE_DIRS} ${EIGEN3
 add_executable(dlo_odom_node src/dlo/odom_node.cc src/dlo/odom.cc)
 add_dependencies(dlo_odom_node ${catkin_EXPORTED_TARGETS})
 target_compile_options(dlo_odom_node PRIVATE ${OpenMP_FLAGS})
-target_link_libraries(dlo_odom_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp)
+target_link_libraries(dlo_odom_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp gtsam)
 
 # Mapping Node
 add_executable (dlo_map_node src/dlo/map_node.cc src/dlo/map.cc)
