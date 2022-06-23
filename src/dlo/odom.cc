@@ -37,6 +37,7 @@ dlo::OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
     this->kf_pub = this->nh.advertise<nav_msgs::Odometry>("kfs", 1, true);
     this->keyframe_pub = this->nh.advertise<sensor_msgs::PointCloud2>("keyframe", 1, true);
     this->full_keyframe_pub = this->nh.advertise<er_slam_msgs::Keyframe>("/dlo/keyframe_full", 1, true);
+    this->submap_pub = this->nh.advertise<sensor_msgs::PointCloud2>("submap", 1, true);
 
     this->odom.pose.pose.position.x = 0.;
     this->odom.pose.pose.position.y = 0.;
@@ -414,6 +415,16 @@ void dlo::OdomNode::publishPose()
     this->pose_ros.pose.orientation.z = this->rotq.z();
 
     this->pose_pub.publish(this->pose_ros);
+
+    if (this->submap_hasChanged)
+    {
+        sensor_msgs::PointCloud2 cloud_msg;
+        pcl::toROSMsg(*this->submap_cloud, cloud_msg);
+        cloud_msg.header.stamp = this->scan_stamp;
+        cloud_msg.header.frame_id = this->odom_frame;
+
+        this->submap_pub.publish(cloud_msg);
+    }
 }
 
 /**

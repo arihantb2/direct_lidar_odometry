@@ -79,6 +79,7 @@ private:
     ros::Publisher keyframe_pub;
     ros::Publisher kf_pub;
     ros::Publisher full_keyframe_pub;
+    ros::Publisher submap_pub;
 
     Eigen::Vector3f origin;
     std::vector<std::pair<Eigen::Vector3f, Eigen::Quaternionf>> trajectory;
