@@ -85,11 +85,19 @@ add_library(nano_gicp STATIC
 target_link_libraries(nano_gicp ${PCL_LIBRARIES} ${OpenMP_LIBS} nanoflann)
 target_include_directories(nano_gicp PUBLIC include ${PCL_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR})
 
+# Frames
+add_library(frames STATIC
+  src/frames/frames.cc
+)
+add_dependencies(frames ${catkin_EXPORTED_TARGETS})
+target_link_libraries(frames ${PCL_LIBRARIES})
+target_include_directories(frames PUBLIC include ${PCL_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR})
+
 # Odometry Node
 add_executable(dlo_odom_node src/dlo/odom_node.cc src/dlo/odom.cc)
 add_dependencies(dlo_odom_node ${catkin_EXPORTED_TARGETS})
 target_compile_options(dlo_odom_node PRIVATE ${OpenMP_FLAGS})
-target_link_libraries(dlo_odom_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp gtsam)
+target_link_libraries(dlo_odom_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp gtsam frames)
 
 # Mapping Node
 add_executable (dlo_map_node src/dlo/map_node.cc src/dlo/map.cc)

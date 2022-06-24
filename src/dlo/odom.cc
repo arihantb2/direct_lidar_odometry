@@ -34,12 +34,14 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
     this->imu_sub = this->nh.subscribe("imu", 1, &OdomNode::imuCB, this);
     this->odom_sub = this->nh.subscribe("/odom", 1, &OdomNode::odomCB, this);
 
+    this->map_publish_timer = this->nh.createTimer(1.0 / this->map_publish_freq_, &OdomNode::mapPublishTimerCB, this);
+
     this->lidar_odom_pub = this->nh.advertise<nav_msgs::Odometry>("odom", 1);
     this->pose_pub = this->nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
-    this->kf_pub = this->nh.advertise<nav_msgs::Odometry>("kfs", 1, true);
+    this->kf_pub = this->nh.advertise<nav_msgs::Odometry>("keyframe_odom", 1, true);
     this->keyframe_pub = this->nh.advertise<sensor_msgs::PointCloud2>("keyframe", 1, true);
-    this->full_keyframe_pub = this->nh.advertise<er_slam_msgs::Keyframe>("/dlo/keyframe_full", 1, true);
     this->submap_pub = this->nh.advertise<sensor_msgs::PointCloud2>("submap", 1, true);
+    this->map_pub = this->nh.advertise<sensor_msgs::PointCloud2>("map", 1, true);
 
     this->odom.pose.pose.position.x = 0.;
     this->odom.pose.pose.position.y = 0.;
@@ -104,20 +106,12 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
     this->current_scan_t = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
 
     this->keyframe_cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-    this->keyframes_cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-    this->num_keyframes = 0;
-
-    this->submap_cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-    this->submap_hasChanged = true;
-    this->submap_kf_idx_prev.clear();
 
     this->source_cloud = nullptr;
     this->target_cloud = nullptr;
 
-    this->convex_hull.setDimension(3);
-    this->concave_hull.setDimension(3);
-    this->concave_hull.setAlpha(this->keyframe_thresh_dist_);
-    this->concave_hull.setKeepInformation(true);
+    this->keyframes = std::make_shared<Frames>(submap_params);
+    this->keyframes->setCvHullAlpha(this->keyframe_thresh_dist_);
 
     this->gicp_s2s.setCorrespondenceRandomness(this->gicps2s_k_correspondences_);
     this->gicp_s2s.setMaxCorrespondenceDistance(this->gicps2s_max_corr_dist_);
@@ -227,9 +221,9 @@ void OdomNode::getParams()
     ros::param::param<double>("~dlo/odomNode/keyframe/threshR", this->keyframe_thresh_rot_, 1.0);
 
     // Submap
-    ros::param::param<int>("~dlo/odomNode/submap/keyframe/knn", this->submap_knn_, 10);
-    ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcv", this->submap_kcv_, 10);
-    ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcc", this->submap_kcc_, 10);
+    ros::param::param<int>("~dlo/odomNode/submap/keyframe/knn", this->submap_params.submap_knn_, 10);
+    ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcv", this->submap_params.submap_kcv_, 10);
+    ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcc", this->submap_params.submap_kcc_, 10);
 
     // Initial Position
     ros::param::param<bool>("~dlo/odomNode/initialPose/use", this->initial_pose_use_, false);
@@ -266,6 +260,10 @@ void OdomNode::getParams()
     ros::param::param<bool>("~dlo/imu", this->imu_use_, false);
     ros::param::param<int>("~dlo/odomNode/imu/calibTime", this->imu_calib_time_, 3);
     ros::param::param<int>("~dlo/odomNode/imu/bufferSize", this->imu_buffer_size_, 2000);
+
+    // Map
+    ros::param::param<double>("~dlo/mapNode/publishFreq", this->map_publish_freq_, 1.0);
+    ros::param::param<double>("~dlo/mapNode/leafSize", this->map_vf_leaf_size_, 0.5);
 
     // GICP
     ros::param::param<int>("~dlo/odomNode/gicp/minNumPoints", this->gicp_min_num_points_, 100);
@@ -364,6 +362,46 @@ void OdomNode::abortTimerCB(const ros::TimerEvent& e)
     }
 }
 
+/*
+ * Map publish timer callback
+ */
+
+void OdomNode::mapPublishTimerCB(const ros::TimerEvent& e)
+{
+    publishMap();
+}
+
+void OdomNode::publishMap()
+{
+    if (this->map_pub.getNumSubscribers() == 0)
+    {
+        return;
+    }
+
+    if (this->keyframes == nullptr)
+    {
+        return;
+    }
+
+    pcl::PointCloud<PointType>::Ptr map_cloud = this->keyframes->getMapDS(this->map_vf_leaf_size_);
+
+    if (map_cloud == nullptr)
+    {
+        return;
+    }
+
+    if (map_cloud->empty())
+    {
+        return;
+    }
+
+    sensor_msgs::PointCloud2 map_ros;
+    pcl::toROSMsg(*map_cloud, map_ros);
+    map_ros.header.stamp = ros::Time::now();
+    map_ros.header.frame_id = this->odom_frame;
+    this->map_pub.publish(map_ros);
+}
+
 /**
  * Publish to ROS
  **/
@@ -423,10 +461,10 @@ void OdomNode::publishPose()
 
     this->pose_pub.publish(this->pose_ros);
 
-    if (this->submap_hasChanged)
+    if (this->keyframes->submapHasChanged() && this->submap_pub.getNumSubscribers() > 0)
     {
         sensor_msgs::PointCloud2 cloud_msg;
-        pcl::toROSMsg(*this->submap_cloud, cloud_msg);
+        pcl::toROSMsg(*this->keyframes->submapCloud(), cloud_msg);
         cloud_msg.header.stamp = this->scan_stamp;
         cloud_msg.header.frame_id = this->odom_frame;
 
@@ -482,24 +520,13 @@ void OdomNode::publishKeyframe()
     this->kf_pub.publish(this->kf);
 
     // Publish keyframe scan
-    if (this->keyframe_cloud->points.size() == this->keyframe_cloud->width * this->keyframe_cloud->height)
+    if (!this->keyframe_cloud->points.empty() && this->keyframe_pub.getNumSubscribers() > 0)
     {
         sensor_msgs::PointCloud2 keyframe_cloud_ros;
         pcl::toROSMsg(*this->keyframe_cloud, keyframe_cloud_ros);
         keyframe_cloud_ros.header.stamp = this->scan_stamp;
         keyframe_cloud_ros.header.frame_id = this->odom_frame;
         this->keyframe_pub.publish(keyframe_cloud_ros);
-    }
-
-    {
-        er_slam_msgs::Keyframe keyframe_msg;
-        keyframe_msg.header.stamp = this->scan_stamp;
-        keyframe_msg.header.frame_id = this->odom_frame;
-        keyframe_msg.child_frame_id = this->child_frame;
-        keyframe_msg.pose = this->kf.pose.pose;
-        pcl::toROSMsg(*this->current_scan, keyframe_msg.cloud);
-
-        this->full_keyframe_pub.publish(keyframe_msg);
     }
 }
 
@@ -558,27 +585,24 @@ void OdomNode::initializeInputTarget()
     }
 
     // keep history of keyframes
-    *this->keyframes_cloud += *first_keyframe;
     *this->keyframe_cloud = *first_keyframe;
 
+    // compute kdtree and keyframe normals (use gicp_s2s input source as temporary storage because it will be overwritten by setInputSources())
+    this->gicp_s2s.setInputSource(this->keyframe_cloud);
+    this->gicp_s2s.calculateSourceCovariances();
+
+    // Add keyframe to map frames
     Keyframe first_kf;
     first_kf.id = 0;
     first_kf.timestamp = this->scan_stamp.toSec();
     first_kf.pose = Eigen::Isometry3f(this->T);
     first_kf.cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
     *(first_kf.cloud) = *(this->current_scan);
-    this->keyframes_map.insert({ 0, first_kf });
-
-    // compute kdtree and keyframe normals (use gicp_s2s input source as temporary storage because it will be overwritten by setInputSources())
-    this->gicp_s2s.setInputSource(this->keyframe_cloud);
-    this->gicp_s2s.calculateSourceCovariances();
-    // this->keyframe_normals.push_back(this->gicp_s2s.getSourceCovariances());
-    this->keyframes_map.at(0).normals = this->gicp_s2s.getSourceCovariances();
+    first_kf.normals = this->gicp_s2s.getSourceCovariances();
+    keyframes->addFrame(first_kf);
 
     this->publish_keyframe_thread = std::thread(&OdomNode::publishKeyframe, this);
     this->publish_keyframe_thread.detach();
-
-    ++this->num_keyframes;
 }
 
 /**
@@ -831,11 +855,6 @@ void OdomNode::optimizeTrajectory()
 
     this->gtsam_keyframe_id++;
 
-    std::cout << "\n======================== GTSAM Keyframe " << this->gtsam_keyframe_id - 1 << " ========================\n";
-
-    this->graph.print("Graph:\n");
-    this->initial_guess.print("Initial Guess:\n");
-
     // Update solver
     this->isam_solver.update(this->graph, this->initial_guess);
     this->isam_solver.update();
@@ -857,7 +876,7 @@ void OdomNode::optimizeTrajectory()
         {
             // Correct keyframe poses
             const int kf_id = this->gtsam_kf_id_map.at(pose_id);
-            this->keyframes_map.at(kf_id).pose = trajectory[pose_id];
+            this->keyframes->setFramePose(kf_id, trajectory[pose_id]);
         }
     }
 
@@ -1028,15 +1047,14 @@ void OdomNode::getNextPose()
     //
 
     // Get current global submap
-    this->getSubmapKeyframes();
-
-    if (this->submap_hasChanged)
+    this->keyframes->buildSubmap(this->T_s2s.block(0, 3, 3, 1));
+    if (this->keyframes->submapHasChanged())
     {
         // Set the current global submap as the target cloud
-        this->gicp.setInputTarget(this->submap_cloud);
+        this->gicp.setInputTarget(this->keyframes->submapCloud());
 
         // Set target cloud's normals as submap normals
-        this->gicp.setTargetCovariances(this->submap_normals);
+        this->gicp.setTargetCovariances(this->keyframes->submapNormals());
     }
 
     // Align with current submap with global S2S transformation as initial guess
@@ -1290,88 +1308,6 @@ void OdomNode::computeSpaciousness()
 }
 
 /**
- * Convex Hull of Keyframes
- **/
-
-void OdomNode::computeConvexHull()
-{
-    // at least 4 keyframes for convex hull
-    if (this->keyframes_map.size() < 4)
-    {
-        return;
-    }
-
-    // create a pointcloud with points at keyframes
-    pcl::PointCloud<PointType>::Ptr cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-
-    for (unsigned int kf_idx = 0; kf_idx < this->keyframes_map.size(); kf_idx++)
-    {
-        PointType pt;
-        pt.x = this->keyframes_map.at(kf_idx).pose.translation().x();
-        pt.y = this->keyframes_map.at(kf_idx).pose.translation().y();
-        pt.z = this->keyframes_map.at(kf_idx).pose.translation().z();
-        cloud->push_back(pt);
-    }
-
-    // calculate the convex hull of the point cloud
-    this->convex_hull.setInputCloud(cloud);
-
-    // get the indices of the keyframes on the convex hull
-    pcl::PointCloud<PointType>::Ptr convex_points = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-    this->convex_hull.reconstruct(*convex_points);
-
-    pcl::PointIndices::Ptr convex_hull_point_idx = pcl::PointIndices::Ptr(new pcl::PointIndices);
-    this->convex_hull.getHullPointIndices(*convex_hull_point_idx);
-
-    this->keyframe_convex.clear();
-    for (int i = 0; i < convex_hull_point_idx->indices.size(); ++i)
-    {
-        this->keyframe_convex.push_back(convex_hull_point_idx->indices[i]);
-    }
-}
-
-/**
- * Concave Hull of Keyframes
- **/
-
-void OdomNode::computeConcaveHull()
-{
-    // at least 5 keyframes for concave hull
-    if (this->keyframes_map.size() < 5)
-    {
-        return;
-    }
-
-    // create a pointcloud with points at keyframes
-    pcl::PointCloud<PointType>::Ptr cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-
-    for (unsigned int kf_idx = 0; kf_idx < this->keyframes_map.size(); kf_idx++)
-    {
-        PointType pt;
-        pt.x = this->keyframes_map.at(kf_idx).pose.translation().x();
-        pt.y = this->keyframes_map.at(kf_idx).pose.translation().y();
-        pt.z = this->keyframes_map.at(kf_idx).pose.translation().z();
-        cloud->push_back(pt);
-    }
-
-    // calculate the concave hull of the point cloud
-    this->concave_hull.setInputCloud(cloud);
-
-    // get the indices of the keyframes on the concave hull
-    pcl::PointCloud<PointType>::Ptr concave_points = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-    this->concave_hull.reconstruct(*concave_points);
-
-    pcl::PointIndices::Ptr concave_hull_point_idx = pcl::PointIndices::Ptr(new pcl::PointIndices);
-    this->concave_hull.getHullPointIndices(*concave_hull_point_idx);
-
-    this->keyframe_concave.clear();
-    for (int i = 0; i < concave_hull_point_idx->indices.size(); ++i)
-    {
-        this->keyframe_concave.push_back(concave_hull_point_idx->indices[i]);
-    }
-}
-
-/**
  * Update keyframes
  **/
 
@@ -1387,10 +1323,9 @@ void OdomNode::updateKeyframes()
 
     int num_nearby = 0;
 
-    for (unsigned int kf_idx = 0; kf_idx < this->keyframes_map.size(); kf_idx++)
+    for (const auto kf_pair : this->keyframes->frames())
     {
-        const Keyframe& kf = this->keyframes_map.at(kf_idx);
-        float delta_d = (kf.pose.translation() - this->pose).norm();
+        float delta_d = (kf_pair.second.pose.translation() - this->pose).norm();
 
         // count the number nearby current pose
         if (delta_d <= this->keyframe_thresh_dist_ * 1.5)
@@ -1402,16 +1337,12 @@ void OdomNode::updateKeyframes()
         if (delta_d < closest_d)
         {
             closest_d = delta_d;
-            closest_idx = kf_idx;
+            closest_idx = kf_pair.first;
         }
     }
 
     // get closest pose and corresponding rotation
-    Eigen::Vector3f closest_pose = this->keyframes_map.at(closest_idx).pose.translation();
-    Eigen::Quaternionf closest_pose_r(this->keyframes_map.at(closest_idx).pose.rotation());
-
-    // calculate distance between current pose and closest pose from above
-    float dd = closest_d;
+    Eigen::Quaternionf closest_pose_r(this->keyframes->getFramePose(closest_idx).rotation());
 
     // calculate difference in orientation
     Eigen::Quaternionf dq = this->rotq * (closest_pose_r.inverse());
@@ -1422,15 +1353,15 @@ void OdomNode::updateKeyframes()
     // update keyframe
     bool newKeyframe = false;
 
-    if (abs(dd) > this->keyframe_thresh_dist_ || abs(theta_deg) > this->keyframe_thresh_rot_)
+    if (abs(closest_d) > this->keyframe_thresh_dist_ || abs(theta_deg) > this->keyframe_thresh_rot_)
     {
         newKeyframe = true;
     }
-    if (abs(dd) <= this->keyframe_thresh_dist_)
+    if (abs(closest_d) <= this->keyframe_thresh_dist_)
     {
         newKeyframe = false;
     }
-    if (abs(dd) <= this->keyframe_thresh_dist_ && abs(theta_deg) > this->keyframe_thresh_rot_ && num_nearby <= 1)
+    if (abs(closest_d) <= this->keyframe_thresh_dist_ && abs(theta_deg) > this->keyframe_thresh_rot_ && num_nearby <= 1)
     {
         newKeyframe = true;
     }
@@ -1445,24 +1376,23 @@ void OdomNode::updateKeyframes()
         }
 
         // compute kdtree and keyframe normals (use gicp_s2s input source as temporary storage because it will be overwritten by setInputSources())
-        *this->keyframes_cloud += *this->current_scan_t;
         *this->keyframe_cloud = *this->current_scan_t;
-
-        // update keyframe map
-        Keyframe kf;
-        kf.id = this->keyframes_map.size();
-        kf.timestamp = this->scan_stamp.toSec();
-        kf.pose = Eigen::Isometry3f(this->T);
-        kf.cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-        *(kf.cloud) = *(this->current_scan);
-        this->keyframes_map.insert({ kf.id, kf });
-
-        // update keyframe id gtsam frame id association map
-        this->gtsam_kf_id_map.insert({ this->gtsam_keyframe_id, kf.id });
 
         this->gicp_s2s.setInputSource(this->keyframe_cloud);
         this->gicp_s2s.calculateSourceCovariances();
-        this->keyframes_map.at(kf.id).normals = this->gicp_s2s.getSourceCovariances();
+
+        // update keyframe map
+        Keyframe kf;
+        kf.id = this->keyframes->size();
+        kf.timestamp = this->scan_stamp.toSec();
+        kf.pose = Eigen::Isometry3f(this->T);
+        kf.cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+        kf.normals = this->gicp_s2s.getSourceCovariances();
+        *(kf.cloud) = *(this->current_scan);
+        this->keyframes->addFrame(kf);
+
+        // update keyframe id gtsam frame id association map
+        this->gtsam_kf_id_map.insert({ this->gtsam_keyframe_id, kf.id });
 
         this->publish_keyframe_thread = std::thread(&OdomNode::publishKeyframe, this);
         this->publish_keyframe_thread.detach();
@@ -1494,153 +1424,7 @@ void OdomNode::setAdaptiveParams()
     }
 
     // set concave hull alpha
-    this->concave_hull.setAlpha(this->keyframe_thresh_dist_);
-}
-
-/**
- * Push Submap Keyframe Indices
- **/
-void OdomNode::pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frames)
-{
-    if (dists.empty())
-    {
-        return;
-    }
-
-    // maintain max heap of at most k elements
-    std::priority_queue<float> pq;
-
-    for (auto d : dists)
-    {
-        if (pq.size() >= k && pq.top() > d)
-        {
-            pq.push(d);
-            pq.pop();
-        }
-        else if (pq.size() < k)
-        {
-            pq.push(d);
-        }
-    }
-
-    // get the kth smallest element, which should be at the top of the heap
-    float kth_element = pq.top();
-
-    // get all elements smaller or equal to the kth smallest element
-    for (int i = 0; i < dists.size(); ++i)
-    {
-        if (dists[i] <= kth_element)
-            this->submap_kf_idx_curr.push_back(frames[i]);
-    }
-}
-
-/**
- * Get Submap using Nearest Neighbor Keyframes
- **/
-
-void OdomNode::getSubmapKeyframes()
-{
-    // clear vector of keyframe indices to use for submap
-    this->submap_kf_idx_curr.clear();
-
-    //
-    // TOP K NEAREST NEIGHBORS FROM ALL KEYFRAMES
-    //
-
-    // calculate distance between current pose and poses in keyframe set
-    std::vector<float> ds;
-    std::vector<int> keyframe_nn;
-    int i = 0;
-    Eigen::Vector3f curr_pose = this->T_s2s.block(0, 3, 3, 1);
-
-    for (unsigned int kf_idx = 0; kf_idx < this->keyframes_map.size(); kf_idx++)
-    {
-        const Eigen::Vector3f& kf_pose = this->keyframes_map.at(kf_idx).pose.translation();
-        float d = (curr_pose - kf_pose).norm();
-        ds.push_back(d);
-        keyframe_nn.push_back(kf_idx);
-    }
-
-    // get indices for top K nearest neighbor keyframe poses
-    this->pushSubmapIndices(ds, this->submap_knn_, keyframe_nn);
-
-    //
-    // TOP K NEAREST NEIGHBORS FROM CONVEX HULL
-    //
-
-    // get convex hull indices
-    this->computeConvexHull();
-
-    // get distances for each keyframe on convex hull
-    std::vector<float> convex_ds;
-    for (const auto& c : this->keyframe_convex)
-    {
-        convex_ds.push_back(ds[c]);
-    }
-
-    // get indicies for top kNN for convex hull
-    this->pushSubmapIndices(convex_ds, this->submap_kcv_, this->keyframe_convex);
-
-    //
-    // TOP K NEAREST NEIGHBORS FROM CONCAVE HULL
-    //
-
-    // get concave hull indices
-    this->computeConcaveHull();
-
-    // get distances for each keyframe on concave hull
-    std::vector<float> concave_ds;
-    for (const auto& c : this->keyframe_concave)
-    {
-        concave_ds.push_back(ds[c]);
-    }
-
-    // get indicies for top kNN for convex hull
-    this->pushSubmapIndices(concave_ds, this->submap_kcc_, this->keyframe_concave);
-
-    //
-    // BUILD SUBMAP
-    //
-
-    // concatenate all submap clouds and normals
-    std::sort(this->submap_kf_idx_curr.begin(), this->submap_kf_idx_curr.end());
-    auto last = std::unique(this->submap_kf_idx_curr.begin(), this->submap_kf_idx_curr.end());
-    this->submap_kf_idx_curr.erase(last, this->submap_kf_idx_curr.end());
-
-    // sort current and previous submap kf list of indices
-    std::sort(this->submap_kf_idx_curr.begin(), this->submap_kf_idx_curr.end());
-    std::sort(this->submap_kf_idx_prev.begin(), this->submap_kf_idx_prev.end());
-
-    // check if submap has changed from previous iteration
-    if (this->submap_kf_idx_curr == this->submap_kf_idx_prev)
-    {
-        this->submap_hasChanged = false;
-    }
-    else
-    {
-        this->submap_hasChanged = true;
-
-        // reinitialize submap cloud, normals
-        pcl::PointCloud<PointType>::Ptr submap_cloud(new pcl::PointCloud<PointType>);
-        pcl::PointCloud<PointType>::Ptr transformed_cloud(new pcl::PointCloud<PointType>);
-        this->submap_normals.clear();
-
-        for (auto k : this->submap_kf_idx_curr)
-        {
-            transformed_cloud.reset(new pcl::PointCloud<PointType>);
-            pcl::transformPointCloud(*this->keyframes_map.at(k).cloud, *transformed_cloud, this->keyframes_map.at(k).pose.matrix());
-
-            // create current submap cloud
-            *submap_cloud += *transformed_cloud;
-
-            // grab corresponding submap cloud's normals
-            this->submap_normals.insert(std::end(this->submap_normals), std::begin(this->keyframes_map.at(k).normals),
-                                        std::end(this->keyframes_map.at(k).normals));
-        }
-
-        this->submap_cloud = submap_cloud;
-        this->submap_kf_idx_prev = this->submap_kf_idx_curr;
-    }
+    this->keyframes->setCvHullAlpha(this->keyframe_thresh_dist_);
 }
 
 /**

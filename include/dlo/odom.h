@@ -15,6 +15,8 @@
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
 #include <gtsam/geometry/Pose3.h>
+#include <frames/frames.h>
+#include <memory>
 
 namespace dlo
 {
@@ -34,6 +36,7 @@ public:
 
 private:
     void abortTimerCB(const ros::TimerEvent& e);
+    void mapPublishTimerCB(const ros::TimerEvent& e);
     void icpCB(const sensor_msgs::PointCloud2ConstPtr& pc);
     void imuCB(const sensor_msgs::Imu::ConstPtr& imu);
     void odomCB(const nav_msgs::Odometry::ConstPtr& odom);
@@ -44,6 +47,7 @@ private:
     void publishPose();
     void publishTransform();
     void publishKeyframe();
+    void publishMap();
 
     void preprocessPoints();
     void initializeInputTarget();
@@ -66,10 +70,6 @@ private:
 
     void transformCurrentScan();
     void updateKeyframes();
-    void computeConvexHull();
-    void computeConcaveHull();
-    void pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frames);
-    void getSubmapKeyframes();
 
     void optimizeTrajectory();
 
@@ -79,6 +79,7 @@ private:
 
     ros::NodeHandle nh;
     ros::Timer abort_timer;
+    ros::Timer map_publish_timer;
 
     ros::Subscriber icp_sub;
     ros::Subscriber imu_sub;
@@ -90,18 +91,12 @@ private:
     ros::Publisher kf_pub;
     ros::Publisher full_keyframe_pub;
     ros::Publisher submap_pub;
+    ros::Publisher map_pub;
 
-    struct Keyframe
-    {
-        int id;
-        double timestamp;
-        Eigen::Isometry3f pose;
-        pcl::PointCloud<PointType>::Ptr cloud;
-        std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> normals;
-    };
+    Frames::Params submap_params;
+    std::shared_ptr<Frames> keyframes;
 
     std::vector<Eigen::Isometry3f> trajectory;
-    std::map<int, Keyframe> keyframes_map;
 
     int gtsam_keyframe_id;
     std::map<int, int> gtsam_kf_id_map;
@@ -120,21 +115,8 @@ private:
     pcl::PointCloud<PointType>::Ptr current_scan;
     pcl::PointCloud<PointType>::Ptr current_scan_t;
 
-    pcl::PointCloud<PointType>::Ptr keyframes_cloud;
     pcl::PointCloud<PointType>::Ptr keyframe_cloud;
     int num_keyframes;
-
-    pcl::ConvexHull<PointType> convex_hull;
-    pcl::ConcaveHull<PointType> concave_hull;
-    std::vector<int> keyframe_convex;
-    std::vector<int> keyframe_concave;
-
-    pcl::PointCloud<PointType>::Ptr submap_cloud;
-    std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>> submap_normals;
-
-    std::vector<int> submap_kf_idx_curr;
-    std::vector<int> submap_kf_idx_prev;
-    std::atomic<bool> submap_hasChanged;
 
     pcl::PointCloud<PointType>::Ptr source_cloud;
     pcl::PointCloud<PointType>::Ptr target_cloud;
@@ -249,11 +231,6 @@ private:
     double keyframe_thresh_dist_;
     double keyframe_thresh_rot_;
 
-    int submap_knn_;
-    int submap_kcv_;
-    int submap_kcc_;
-    double submap_concave_alpha_;
-
     bool initial_pose_use_;
     Eigen::Vector3f initial_position_;
     Eigen::Quaternionf initial_orientation_;
@@ -277,6 +254,9 @@ private:
     bool imu_use_;
     int imu_calib_time_;
     int imu_buffer_size_;
+
+    double map_publish_freq_;
+    double map_vf_leaf_size_;
 
     int gicp_min_num_points_;
 
