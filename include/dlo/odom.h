@@ -8,7 +8,6 @@
  ***********************************************************/
 
 #include "dlo/dlo.h"
-#include <er_slam_msgs/Keyframe.h>
 #include <gtsam/nonlinear/ISAM2.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>

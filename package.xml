@@ -22,7 +22,6 @@
   <depend>geometry_msgs</depend>
   <depend>pcl_ros</depend>
   <depend>tf_conversions</depend>
-  <depend>er_slam_msgs</depend>
   <depend>eigen_conversions</depend>
 
   <export>

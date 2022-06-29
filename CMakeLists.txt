@@ -47,7 +47,6 @@ find_package(catkin REQUIRED COMPONENTS
   pcl_ros
   tf_conversions
   eigen_conversions
-  er_slam_msgs
 )
 
 catkin_package(
@@ -58,7 +57,6 @@ catkin_package(
     geometry_msgs
     pcl_ros
     tf_conversions
-    er_slam_msgs
     eigen_conversions
   INCLUDE_DIRS
     include
