@@ -13,6 +13,7 @@
 
   <arg name="pointcloud_topic" default="/velodyne_points"/>
   <arg name="imu_topic" default="/imu/data"/>
+  <arg name="wheel_odom_topic" default="/odom"/>
 
   <!-- DLO Odometry Node -->
   <node ns="er_slam" name="dlo_odom" pkg="direct_lidar_odometry" type="dlo_odom_node" output="screen" clear_params="true">
@@ -24,6 +25,7 @@
     <!-- Subscriptions -->
     <remap from="~pointcloud" to="$(arg pointcloud_topic)"/>
     <remap from="~imu" to="$(arg imu_topic)"/>
+    <remap from="~wheel_odom" to="$(arg wheel_odom_topic)"/>
 
     <!-- Publications -->
     <remap from="~odom" to="dlo/odom"/>

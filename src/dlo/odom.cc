@@ -32,7 +32,7 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
 
     this->icp_sub = this->nh.subscribe("pointcloud", 1, &OdomNode::icpCB, this);
     this->imu_sub = this->nh.subscribe("imu", 1, &OdomNode::imuCB, this);
-    this->odom_sub = this->nh.subscribe("/odom", 1, &OdomNode::odomCB, this);
+    this->odom_sub = this->nh.subscribe("wheel_odom", 1, &OdomNode::odomCB, this);
 
     this->map_publish_timer = this->nh.createTimer(1.0 / this->map_publish_freq_, &OdomNode::mapPublishTimerCB, this);
 
@@ -202,16 +202,10 @@ void OdomNode::getParams()
     ros::param::param<std::string>("~dlo/version", this->version_, "0.0.0");
 
     // Frames
+    ros::param::param<std::string>("~dlo/odomNode/map_frame", this->map_frame, "map");
     ros::param::param<std::string>("~dlo/odomNode/odom_frame", this->odom_frame, "odom");
-    ros::param::param<std::string>("~dlo/odomNode/child_frame", this->child_frame, "base_link");
-
-    // Get Node NS and Remove Leading Character
-    std::string ns = ros::this_node::getNamespace();
-    ns.erase(0, 1);
-
-    // Concatenate Frame Name Strings
-    // this->odom_frame = ns + "/" + this->odom_frame;
-    // this->child_frame = ns + "/" + this->child_frame;
+    ros::param::param<std::string>("~dlo/odomNode/baselink_frame", this->baselink_frame, "base_link");
+    ros::param::param<std::string>("~dlo/odomNode/lidar_frame", this->lidar_frame, "lidar_link");
 
     // Gravity alignment
     ros::param::param<bool>("~dlo/gravityAlign", this->gravity_align_, false);
@@ -282,19 +276,16 @@ void OdomNode::getParams()
     ros::param::param<int>("~dlo/odomNode/gicp/s2m/ransac/iterations", this->gicps2m_ransac_iter_, 0);
     ros::param::param<double>("~dlo/odomNode/gicp/s2m/ransac/outlierRejectionThresh", this->gicps2m_ransac_inlier_thresh_, 0.05);
 
-    std::string lidar_frame;
-    ros::param::param<std::string>("~dlo/odomNode/lidarFrame", lidar_frame, "velodyne_frame");
-
     tf::TransformListener tf_listener;
     tf::StampedTransform transform;
     try
     {
-        tf_listener.waitForTransform(child_frame, lidar_frame, ros::Time(0), ros::Duration(5.0));
-        tf_listener.lookupTransform(child_frame, lidar_frame, ros::Time(0), transform);
+        tf_listener.waitForTransform(this->baselink_frame, this->lidar_frame, ros::Time(0), ros::Duration(5.0));
+        tf_listener.lookupTransform(this->baselink_frame, this->lidar_frame, ros::Time(0), transform);
     }
     catch (tf::TransformException ex)
     {
-        ROS_ERROR_STREAM("Cannot get transform [" << child_frame << " -> " << lidar_frame << "]. Error: [" << ex.what() << "]");
+        ROS_ERROR_STREAM("Cannot get transform [" << this->baselink_frame << " -> " << this->lidar_frame << "]. Error: [" << ex.what() << "]");
     }
 
     tf::transformTFToEigen(transform, baselink_tf_lidar_);
@@ -398,7 +389,7 @@ void OdomNode::publishMap()
     sensor_msgs::PointCloud2 map_ros;
     pcl::toROSMsg(*map_cloud, map_ros);
     map_ros.header.stamp = ros::Time::now();
-    map_ros.header.frame_id = this->odom_frame;
+    map_ros.header.frame_id = this->map_frame;
     this->map_pub.publish(map_ros);
 }
 
@@ -443,12 +434,12 @@ void OdomNode::publishPose()
     this->odom.pose.pose.orientation.z = this->rotq.z();
 
     this->odom.header.stamp = this->scan_stamp;
-    this->odom.header.frame_id = this->odom_frame;
-    this->odom.child_frame_id = this->child_frame;
+    this->odom.header.frame_id = this->map_frame;
+    this->odom.child_frame_id = this->baselink_frame;
     this->lidar_odom_pub.publish(this->odom);
 
     this->pose_ros.header.stamp = this->scan_stamp;
-    this->pose_ros.header.frame_id = this->odom_frame;
+    this->pose_ros.header.frame_id = this->map_frame;
 
     this->pose_ros.pose.position.x = this->pose[0];
     this->pose_ros.pose.position.y = this->pose[1];
@@ -466,7 +457,7 @@ void OdomNode::publishPose()
         sensor_msgs::PointCloud2 cloud_msg;
         pcl::toROSMsg(*this->keyframes->submapCloud(), cloud_msg);
         cloud_msg.header.stamp = this->scan_stamp;
-        cloud_msg.header.frame_id = this->odom_frame;
+        cloud_msg.header.frame_id = this->map_frame;
 
         this->submap_pub.publish(cloud_msg);
     }
@@ -478,23 +469,42 @@ void OdomNode::publishPose()
 
 void OdomNode::publishTransform()
 {
+    static tf::TransformListener tf_listener;
+    tf::StampedTransform transform;
+    try
+    {
+        tf_listener.waitForTransform(this->odom_frame, this->baselink_frame, this->scan_stamp, ros::Duration(0.5));
+        tf_listener.lookupTransform(this->odom_frame, this->baselink_frame, this->scan_stamp, transform);
+    }
+    catch (tf::TransformException ex)
+    {
+        ROS_ERROR_STREAM("Cannot get transform [" << this->odom_frame << "]->[" << this->baselink_frame << "]. Exception: " << ex.what());
+    }
+
+    Eigen::Isometry3d odom_2_bl;
+    tf::transformTFToEigen(transform, odom_2_bl);
+
+    const Eigen::Isometry3d map_to_baselink(this->T.cast<double>());
+    Eigen::Isometry3d map_2_odom = map_to_baselink * odom_2_bl.inverse();
+    Eigen::Quaterniond normalized_quat(map_2_odom.rotation());
+    normalized_quat.normalize();
+    map_2_odom.matrix().topLeftCorner(3, 3) = normalized_quat.toRotationMatrix();
+
+    const geometry_msgs::Pose map_2_odom_tf = tf2::toMsg(map_2_odom);
+
     static tf2_ros::TransformBroadcaster br;
-    geometry_msgs::TransformStamped transformStamped;
+    geometry_msgs::TransformStamped transform_stamped;
 
-    transformStamped.header.stamp = this->scan_stamp;
-    transformStamped.header.frame_id = this->odom_frame;
-    transformStamped.child_frame_id = this->child_frame;
+    transform_stamped.header.stamp = this->scan_stamp;
+    transform_stamped.header.frame_id = this->map_frame;
+    transform_stamped.child_frame_id = this->odom_frame;
 
-    transformStamped.transform.translation.x = this->pose[0];
-    transformStamped.transform.translation.y = this->pose[1];
-    transformStamped.transform.translation.z = this->pose[2];
+    transform_stamped.transform.translation.x = map_2_odom_tf.position.x;
+    transform_stamped.transform.translation.y = map_2_odom_tf.position.y;
+    transform_stamped.transform.translation.z = map_2_odom_tf.position.z;
+    transform_stamped.transform.rotation = map_2_odom_tf.orientation;
 
-    transformStamped.transform.rotation.w = this->rotq.w();
-    transformStamped.transform.rotation.x = this->rotq.x();
-    transformStamped.transform.rotation.y = this->rotq.y();
-    transformStamped.transform.rotation.z = this->rotq.z();
-
-    br.sendTransform(transformStamped);
+    br.sendTransform(transform_stamped);
 }
 
 /**
@@ -505,8 +515,8 @@ void OdomNode::publishKeyframe()
 {
     // Publish keyframe pose
     this->kf.header.stamp = this->scan_stamp;
-    this->kf.header.frame_id = this->odom_frame;
-    this->kf.child_frame_id = this->child_frame;
+    this->kf.header.frame_id = this->map_frame;
+    this->kf.child_frame_id = this->baselink_frame;
 
     this->kf.pose.pose.position.x = this->pose[0];
     this->kf.pose.pose.position.y = this->pose[1];
@@ -525,7 +535,7 @@ void OdomNode::publishKeyframe()
         sensor_msgs::PointCloud2 keyframe_cloud_ros;
         pcl::toROSMsg(*this->keyframe_cloud, keyframe_cloud_ros);
         keyframe_cloud_ros.header.stamp = this->scan_stamp;
-        keyframe_cloud_ros.header.frame_id = this->odom_frame;
+        keyframe_cloud_ros.header.frame_id = this->map_frame;
         this->keyframe_pub.publish(keyframe_cloud_ros);
     }
 }
@@ -1081,7 +1091,7 @@ void OdomNode::getNextPose()
 void OdomNode::integrateOdom()
 {
     // Extract odom data between the two frames
-    std::vector<OdomMeas> odom_frame;
+    std::vector<OdomMeas> odom_frames;
 
     this->mtx_odom.lock();
     for (const auto& o : this->odom_buffer)
@@ -1094,13 +1104,13 @@ void OdomNode::integrateOdom()
 
         if (curr_frame_odom_dt >= 0. && prev_frame_odom_dt <= 0.)
         {
-            odom_frame.push_back(o);
+            odom_frames.push_back(o);
         }
     }
     this->mtx_odom.unlock();
 
     // Sort measurements by time
-    std::sort(odom_frame.begin(), odom_frame.end(), this->comparatorMeas);
+    std::sort(odom_frames.begin(), odom_frames.end(), this->comparatorMeas);
 
     // Relative Odom integration of gyro and accelerometer
     double curr_odom_stamp = 0.;
@@ -1110,30 +1120,30 @@ void OdomNode::integrateOdom()
     Eigen::Quaternionf q = Eigen::Quaternionf::Identity();
     Eigen::Vector3f t = Eigen::Vector3f::Zero();
 
-    for (uint32_t i = 0; i < odom_frame.size(); ++i)
+    for (uint32_t i = 0; i < odom_frames.size(); ++i)
     {
         if (prev_odom_stamp == 0.)
         {
-            prev_odom_stamp = odom_frame[i].stamp;
+            prev_odom_stamp = odom_frames[i].stamp;
             continue;
         }
 
         // Calculate difference in odom measurement times IN SECONDS
-        curr_odom_stamp = odom_frame[i].stamp;
+        curr_odom_stamp = odom_frames[i].stamp;
         dt = curr_odom_stamp - prev_odom_stamp;
         prev_odom_stamp = curr_odom_stamp;
 
         // Relative gyro propagation quaternion dynamics
         Eigen::Quaternionf qq = q;
-        q.w() -= 0.5 * (qq.x() * odom_frame[i].ang_vel.x + qq.y() * odom_frame[i].ang_vel.y + qq.z() * odom_frame[i].ang_vel.z) * dt;
-        q.x() += 0.5 * (qq.w() * odom_frame[i].ang_vel.x - qq.z() * odom_frame[i].ang_vel.y + qq.y() * odom_frame[i].ang_vel.z) * dt;
-        q.y() += 0.5 * (qq.z() * odom_frame[i].ang_vel.x + qq.w() * odom_frame[i].ang_vel.y - qq.x() * odom_frame[i].ang_vel.z) * dt;
-        q.z() += 0.5 * (qq.x() * odom_frame[i].ang_vel.y - qq.y() * odom_frame[i].ang_vel.x + qq.w() * odom_frame[i].ang_vel.z) * dt;
+        q.w() -= 0.5 * (qq.x() * odom_frames[i].ang_vel.x + qq.y() * odom_frames[i].ang_vel.y + qq.z() * odom_frames[i].ang_vel.z) * dt;
+        q.x() += 0.5 * (qq.w() * odom_frames[i].ang_vel.x - qq.z() * odom_frames[i].ang_vel.y + qq.y() * odom_frames[i].ang_vel.z) * dt;
+        q.y() += 0.5 * (qq.z() * odom_frames[i].ang_vel.x + qq.w() * odom_frames[i].ang_vel.y - qq.x() * odom_frames[i].ang_vel.z) * dt;
+        q.z() += 0.5 * (qq.x() * odom_frames[i].ang_vel.y - qq.y() * odom_frames[i].ang_vel.x + qq.w() * odom_frames[i].ang_vel.z) * dt;
 
         Eigen::Vector3f tt = t;
-        t.x() += tt.x() + odom_frame[i].lin_vel.x * dt;
-        t.y() += tt.y() + odom_frame[i].lin_vel.y * dt;
-        t.z() += tt.z() + odom_frame[i].lin_vel.z * dt;
+        t.x() += tt.x() + odom_frames[i].lin_vel.x * dt;
+        t.y() += tt.y() + odom_frames[i].lin_vel.y * dt;
+        t.z() += tt.z() + odom_frames[i].lin_vel.z * dt;
     }
 
     // Normalize quaternion
@@ -1148,7 +1158,7 @@ void OdomNode::integrateOdom()
     this->odom_SE3.block<3, 3>(0, 0) = q.toRotationMatrix();
     this->odom_SE3.block<3, 1>(0, 3) = t;
 
-    ROS_DEBUG_STREAM("[OdomNode::integrateOdom]: Odom frame size: " << odom_frame.size());
+    ROS_DEBUG_STREAM("[OdomNode::integrateOdom]: Odom frame size: " << odom_frames.size());
     ROS_DEBUG_STREAM("[OdomNode::integrateOdom]: odom_SE3:\n" << this->odom_SE3);
 }
 

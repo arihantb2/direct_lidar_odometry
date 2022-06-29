@@ -18,8 +18,10 @@ dlo:
   gravityAlign: true
 
   odomNode:
+    map_frame: map
     odom_frame: odom
     child_frame: base_link
+    lidar_frame: velodyne_frame
 
   mapNode:
     publishFreq: 1.0

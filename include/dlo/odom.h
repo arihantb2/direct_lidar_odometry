@@ -107,8 +107,10 @@ private:
     std::atomic<bool> dlo_initialized;
     std::atomic<bool> imu_calibrated;
 
+    std::string map_frame;
     std::string odom_frame;
-    std::string child_frame;
+    std::string baselink_frame;
+    std::string lidar_frame;
 
     pcl::PointCloud<PointType>::Ptr original_scan;
     pcl::PointCloud<PointType>::Ptr current_scan;
