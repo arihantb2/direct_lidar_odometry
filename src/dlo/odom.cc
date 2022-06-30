@@ -39,11 +39,14 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
     // this->get_current_waypoint_service = this->nh.advertiseService("/localization/get_current_waypoint", &OdomNode::getCurrentWaypointCallback, this);
     // this->get_waypoint_by_id_service = this->nh.advertiseService("/localization/get_waypoint_by_id", &OdomNode::getWaypointByIdCallback, this);
 
-    init();
+    this->init();
 
-    loadMap();
+    if (this->mode == OpMode::LOCALIZATION)
+    {
+        this->loadMap();
+    }
 
-    startSubscribers();
+    this->startSubscribers();
 }
 
 /**
@@ -1531,7 +1534,14 @@ void OdomNode::setAdaptiveParams()
 
 bool OdomNode::saveCallback(er_file_io_msgs::HandleFile::Request& request, er_file_io_msgs::HandleFile::Response& response)
 {
-    saveMapFramesToDisk(this->keyframes->frames(), this->map_directory + "/" + request.file_path_and_name);
+    if (request.file_path_and_name.empty())
+    {
+        std::cout << "[OdomNode::saveCallback]: Cannot save map with empty name string\n";
+        return true;
+    }
+
+    this->map_name = request.file_path_and_name;
+    saveMapFramesToDisk(this->keyframes->frames(), this->map_directory + "/" + this->map_name);
     return true;
 }
 
@@ -1549,7 +1559,7 @@ bool OdomNode::resetCallback(er_nav_msgs::SetLocalizationState::Request& request
 
     // Stop sensor data subscribers
     std::cout << "[OdomNode::resetCallback]: Stopping subscribers to sensor data ...\n";
-    stopSubscribers();
+    this->stopSubscribers();
 
     // Cache keyframes
     KeyframeMap<int> cached_frames;
@@ -1560,15 +1570,12 @@ bool OdomNode::resetCallback(er_nav_msgs::SetLocalizationState::Request& request
     }
 
     // Re-init class variables
-    init();
+    this->init();
 
     if (!request.localization_mode)
     {
         // Switch to SLAM mode
         this->mode = OpMode::SLAM;
-        this->keyframes.reset();
-        this->keyframes = std::make_shared<Frames>(this->submap_params, cached_frames);
-
         std::cout << "[OdomNode::resetCallback]: Reset node to SLAM mode with existing map\n";
     }
     else if (!request.file_tag.empty())
@@ -1599,7 +1606,7 @@ bool OdomNode::resetCallback(er_nav_msgs::SetLocalizationState::Request& request
 
     // Start sensor data subscribers
     std::cout << "[OdomNode::resetCallback]: Starting subscribers to sensor data ...\n";
-    startSubscribers();
+    this->startSubscribers();
 
     response.success = true;
     return true;
