@@ -9,6 +9,7 @@
 
 #include "dlo/odom.h"
 #include <tf/transform_listener.h>
+#include <geometry_msgs/PoseArray.h>
 
 namespace dlo
 {
@@ -22,6 +23,145 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
 {
     this->getParams();
 
+    // Initialize ROS publishers
+    this->lidar_odom_pub = this->nh.advertise<nav_msgs::Odometry>("odom", 1);
+    this->pose_pub = this->nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
+    this->kf_pub = this->nh.advertise<nav_msgs::Odometry>("keyframe_odom", 1, true);
+    this->kf_array_pub = this->nh.advertise<geometry_msgs::PoseArray>("keyframe_array", 1, true);
+    this->keyframe_pub = this->nh.advertise<sensor_msgs::PointCloud2>("keyframe", 1, true);
+    this->submap_pub = this->nh.advertise<sensor_msgs::PointCloud2>("submap", 1, true);
+    this->map_pub = this->nh.advertise<sensor_msgs::PointCloud2>("map", 1, true);
+
+    // Initialize ROS services
+    this->reset_service = this->nh.advertiseService("/localization/reset", &OdomNode::resetCallback, this);
+    this->save_map_service = this->nh.advertiseService("/localization/save_map", &OdomNode::saveCallback, this);
+    // this->load_map_service = this->nh.advertiseService("/localization/load_map", &OdomNode::loadCallback, this);
+    // this->get_current_waypoint_service = this->nh.advertiseService("/localization/get_current_waypoint", &OdomNode::getCurrentWaypointCallback, this);
+    // this->get_waypoint_by_id_service = this->nh.advertiseService("/localization/get_waypoint_by_id", &OdomNode::getWaypointByIdCallback, this);
+
+    init();
+
+    loadMap();
+
+    startSubscribers();
+}
+
+/**
+ * Destructor
+ **/
+
+OdomNode::~OdomNode()
+{
+}
+
+/**
+ * Odom Node Parameters
+ **/
+
+void OdomNode::getParams()
+{
+    // Version
+    ros::param::param<std::string>("~dlo/version", this->version_, "0.0.0");
+
+    // Frames
+    ros::param::param<std::string>("~dlo/odomNode/map_frame", this->map_frame, "map");
+    ros::param::param<std::string>("~dlo/odomNode/odom_frame", this->odom_frame, "odom");
+    ros::param::param<std::string>("~dlo/odomNode/baselink_frame", this->baselink_frame, "base_link");
+    ros::param::param<std::string>("~dlo/odomNode/lidar_frame", this->lidar_frame, "lidar_link");
+
+    // Map IO directory
+    ros::param::param<std::string>("~dlo/mapDirectory", this->map_directory, "");
+    ros::param::param<std::string>("~dlo/mapName", this->map_name, "");
+
+    // Gravity alignment
+    ros::param::param<bool>("~dlo/gravityAlign", this->gravity_align_, false);
+
+    // Keyframe Threshold
+    ros::param::param<double>("~dlo/odomNode/keyframe/threshD", this->keyframe_thresh_dist_, 0.1);
+    ros::param::param<double>("~dlo/odomNode/keyframe/threshR", this->keyframe_thresh_rot_, 1.0);
+
+    // Submap
+    ros::param::param<int>("~dlo/odomNode/submap/keyframe/knn", this->submap_params.submap_knn_, 10);
+    ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcv", this->submap_params.submap_kcv_, 10);
+    ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcc", this->submap_params.submap_kcc_, 10);
+
+    // Initial Position
+    ros::param::param<bool>("~dlo/odomNode/initialPose/use", this->initial_pose_use_, false);
+
+    double px, py, pz, qx, qy, qz, qw;
+    ros::param::param<double>("~dlo/odomNode/initialPose/position/x", px, 0.0);
+    ros::param::param<double>("~dlo/odomNode/initialPose/position/y", py, 0.0);
+    ros::param::param<double>("~dlo/odomNode/initialPose/position/z", pz, 0.0);
+    ros::param::param<double>("~dlo/odomNode/initialPose/orientation/w", qw, 1.0);
+    ros::param::param<double>("~dlo/odomNode/initialPose/orientation/x", qx, 0.0);
+    ros::param::param<double>("~dlo/odomNode/initialPose/orientation/y", qy, 0.0);
+    ros::param::param<double>("~dlo/odomNode/initialPose/orientation/z", qz, 0.0);
+    this->initial_position_ = Eigen::Vector3f(px, py, pz);
+    this->initial_orientation_ = Eigen::Quaternionf(qw, qx, qy, qz);
+
+    // Crop Box Filter
+    ros::param::param<bool>("~dlo/odomNode/preprocessing/cropBoxFilter/use", this->crop_use_, false);
+    ros::param::param<double>("~dlo/odomNode/preprocessing/cropBoxFilter/size", this->crop_size_, 1.0);
+
+    // Voxel Grid Filter
+    ros::param::param<bool>("~dlo/odomNode/preprocessing/voxelFilter/scan/use", this->vf_scan_use_, true);
+    ros::param::param<double>("~dlo/odomNode/preprocessing/voxelFilter/scan/res", this->vf_scan_res_, 0.05);
+    ros::param::param<bool>("~dlo/odomNode/preprocessing/voxelFilter/submap/use", this->vf_submap_use_, false);
+    ros::param::param<double>("~dlo/odomNode/preprocessing/voxelFilter/submap/res", this->vf_submap_res_, 0.1);
+
+    // Adaptive Parameters
+    ros::param::param<bool>("~dlo/adaptiveParams", this->adaptive_params_use_, false);
+
+    // Odom
+    ros::param::param<bool>("~dlo/odom", this->odom_use_, false);
+    ros::param::param<int>("~dlo/odomNode/odom/bufferSize", this->odom_buffer_size_, 2000);
+
+    // IMU
+    ros::param::param<bool>("~dlo/imu", this->imu_use_, false);
+    ros::param::param<int>("~dlo/odomNode/imu/calibTime", this->imu_calib_time_, 3);
+    ros::param::param<int>("~dlo/odomNode/imu/bufferSize", this->imu_buffer_size_, 2000);
+
+    // Map
+    ros::param::param<double>("~dlo/mapNode/publishFreq", this->map_publish_freq_, 1.0);
+    ros::param::param<double>("~dlo/mapNode/leafSize", this->map_vf_leaf_size_, 0.5);
+
+    // GICP
+    ros::param::param<int>("~dlo/odomNode/gicp/minNumPoints", this->gicp_min_num_points_, 100);
+    ros::param::param<int>("~dlo/odomNode/gicp/s2s/kCorrespondences", this->gicps2s_k_correspondences_, 20);
+    ros::param::param<double>("~dlo/odomNode/gicp/s2s/maxCorrespondenceDistance", this->gicps2s_max_corr_dist_, std::sqrt(std::numeric_limits<double>::max()));
+    ros::param::param<int>("~dlo/odomNode/gicp/s2s/maxIterations", this->gicps2s_max_iter_, 64);
+    ros::param::param<double>("~dlo/odomNode/gicp/s2s/transformationEpsilon", this->gicps2s_transformation_ep_, 0.0005);
+    ros::param::param<double>("~dlo/odomNode/gicp/s2s/euclideanFitnessEpsilon", this->gicps2s_euclidean_fitness_ep_, -std::numeric_limits<double>::max());
+    ros::param::param<int>("~dlo/odomNode/gicp/s2s/ransac/iterations", this->gicps2s_ransac_iter_, 0);
+    ros::param::param<double>("~dlo/odomNode/gicp/s2s/ransac/outlierRejectionThresh", this->gicps2s_ransac_inlier_thresh_, 0.05);
+    ros::param::param<int>("~dlo/odomNode/gicp/s2m/kCorrespondences", this->gicps2m_k_correspondences_, 20);
+    ros::param::param<double>("~dlo/odomNode/gicp/s2m/maxCorrespondenceDistance", this->gicps2m_max_corr_dist_, std::sqrt(std::numeric_limits<double>::max()));
+    ros::param::param<int>("~dlo/odomNode/gicp/s2m/maxIterations", this->gicps2m_max_iter_, 64);
+    ros::param::param<double>("~dlo/odomNode/gicp/s2m/transformationEpsilon", this->gicps2m_transformation_ep_, 0.0005);
+    ros::param::param<double>("~dlo/odomNode/gicp/s2m/euclideanFitnessEpsilon", this->gicps2m_euclidean_fitness_ep_, -std::numeric_limits<double>::max());
+    ros::param::param<int>("~dlo/odomNode/gicp/s2m/ransac/iterations", this->gicps2m_ransac_iter_, 0);
+    ros::param::param<double>("~dlo/odomNode/gicp/s2m/ransac/outlierRejectionThresh", this->gicps2m_ransac_inlier_thresh_, 0.05);
+
+    tf::TransformListener tf_listener;
+    tf::StampedTransform transform;
+    try
+    {
+        tf_listener.waitForTransform(this->baselink_frame, this->lidar_frame, ros::Time(0), ros::Duration(5.0));
+        tf_listener.lookupTransform(this->baselink_frame, this->lidar_frame, ros::Time(0), transform);
+    }
+    catch (tf::TransformException ex)
+    {
+        ROS_ERROR_STREAM("Cannot get transform [" << this->baselink_frame << " -> " << this->lidar_frame << "]. Error: [" << ex.what() << "]");
+    }
+
+    tf::transformTFToEigen(transform, baselink_tf_lidar_);
+
+    std::cout << "baselink_tf_lidar: [(" << baselink_tf_lidar_.translation().transpose() << "), ("
+              << baselink_tf_lidar_.rotation().eulerAngles(0, 1, 2).transpose() << ")]\n";
+}
+
+void OdomNode::init()
+{
     this->stop_publish_thread = false;
     this->stop_publish_keyframe_thread = false;
     this->stop_metrics_thread = false;
@@ -30,19 +170,7 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
     this->dlo_initialized = false;
     this->imu_calibrated = false;
 
-    this->icp_sub = this->nh.subscribe("pointcloud", 1, &OdomNode::icpCB, this);
-    this->imu_sub = this->nh.subscribe("imu", 1, &OdomNode::imuCB, this);
-    this->odom_sub = this->nh.subscribe("wheel_odom", 1, &OdomNode::odomCB, this);
-
-    this->map_publish_timer = this->nh.createTimer(1.0 / this->map_publish_freq_, &OdomNode::mapPublishTimerCB, this);
-
-    this->lidar_odom_pub = this->nh.advertise<nav_msgs::Odometry>("odom", 1);
-    this->pose_pub = this->nh.advertise<geometry_msgs::PoseStamped>("pose", 1);
-    this->kf_pub = this->nh.advertise<nav_msgs::Odometry>("keyframe_odom", 1, true);
-    this->keyframe_pub = this->nh.advertise<sensor_msgs::PointCloud2>("keyframe", 1, true);
-    this->submap_pub = this->nh.advertise<sensor_msgs::PointCloud2>("submap", 1, true);
-    this->map_pub = this->nh.advertise<sensor_msgs::PointCloud2>("map", 1, true);
-
+    // Initialize class variables
     this->odom.pose.pose.position.x = 0.;
     this->odom.pose.pose.position.y = 0.;
     this->odom.pose.pose.position.z = 0.;
@@ -184,114 +312,46 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
     ROS_INFO("DLO Odom Node Initialized");
 }
 
-/**
- * Destructor
- **/
-
-OdomNode::~OdomNode()
+void OdomNode::loadMap()
 {
+    if (this->map_name.empty())
+    {
+        return;
+    }
+
+    std::string map_path = this->map_directory + "/" + this->map_name;
+    if (boost::filesystem::exists(map_path) && boost::filesystem::is_directory(map_path))
+    {
+        KeyframeMap<int> frames = loadMapFramesFromDisk(map_path);
+        this->keyframes.reset();
+        this->keyframes = std::make_shared<Frames>(this->submap_params, frames);
+        this->publishAllKeyframes();
+
+        std::cout << "[OdomNode::loadMap]: Loaded map [" << map_path << "]\n";
+        return;
+    }
+
+    std::cout << "[OdomNode::loadMap]: Failed to load map [" << map_path << "]\n";
 }
 
-/**
- * Odom Node Parameters
- **/
-
-void OdomNode::getParams()
+void OdomNode::startSubscribers()
 {
-    // Version
-    ros::param::param<std::string>("~dlo/version", this->version_, "0.0.0");
+    // Initialize ROS subscribers
+    this->icp_sub = this->nh.subscribe("pointcloud", 1, &OdomNode::icpCB, this);
+    this->imu_sub = this->nh.subscribe("imu", 1, &OdomNode::imuCB, this);
+    this->odom_sub = this->nh.subscribe("wheel_odom", 1, &OdomNode::odomCB, this);
 
-    // Frames
-    ros::param::param<std::string>("~dlo/odomNode/map_frame", this->map_frame, "map");
-    ros::param::param<std::string>("~dlo/odomNode/odom_frame", this->odom_frame, "odom");
-    ros::param::param<std::string>("~dlo/odomNode/baselink_frame", this->baselink_frame, "base_link");
-    ros::param::param<std::string>("~dlo/odomNode/lidar_frame", this->lidar_frame, "lidar_link");
+    // Intialize ROS timers
+    this->map_publish_timer = this->nh.createTimer(1.0 / this->map_publish_freq_, &OdomNode::mapPublishTimerCB, this);
+}
 
-    // Gravity alignment
-    ros::param::param<bool>("~dlo/gravityAlign", this->gravity_align_, false);
+void OdomNode::stopSubscribers()
+{
+    this->icp_sub.shutdown();
+    this->imu_sub.shutdown();
+    this->odom_sub.shutdown();
 
-    // Keyframe Threshold
-    ros::param::param<double>("~dlo/odomNode/keyframe/threshD", this->keyframe_thresh_dist_, 0.1);
-    ros::param::param<double>("~dlo/odomNode/keyframe/threshR", this->keyframe_thresh_rot_, 1.0);
-
-    // Submap
-    ros::param::param<int>("~dlo/odomNode/submap/keyframe/knn", this->submap_params.submap_knn_, 10);
-    ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcv", this->submap_params.submap_kcv_, 10);
-    ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcc", this->submap_params.submap_kcc_, 10);
-
-    // Initial Position
-    ros::param::param<bool>("~dlo/odomNode/initialPose/use", this->initial_pose_use_, false);
-
-    double px, py, pz, qx, qy, qz, qw;
-    ros::param::param<double>("~dlo/odomNode/initialPose/position/x", px, 0.0);
-    ros::param::param<double>("~dlo/odomNode/initialPose/position/y", py, 0.0);
-    ros::param::param<double>("~dlo/odomNode/initialPose/position/z", pz, 0.0);
-    ros::param::param<double>("~dlo/odomNode/initialPose/orientation/w", qw, 1.0);
-    ros::param::param<double>("~dlo/odomNode/initialPose/orientation/x", qx, 0.0);
-    ros::param::param<double>("~dlo/odomNode/initialPose/orientation/y", qy, 0.0);
-    ros::param::param<double>("~dlo/odomNode/initialPose/orientation/z", qz, 0.0);
-    this->initial_position_ = Eigen::Vector3f(px, py, pz);
-    this->initial_orientation_ = Eigen::Quaternionf(qw, qx, qy, qz);
-
-    // Crop Box Filter
-    ros::param::param<bool>("~dlo/odomNode/preprocessing/cropBoxFilter/use", this->crop_use_, false);
-    ros::param::param<double>("~dlo/odomNode/preprocessing/cropBoxFilter/size", this->crop_size_, 1.0);
-
-    // Voxel Grid Filter
-    ros::param::param<bool>("~dlo/odomNode/preprocessing/voxelFilter/scan/use", this->vf_scan_use_, true);
-    ros::param::param<double>("~dlo/odomNode/preprocessing/voxelFilter/scan/res", this->vf_scan_res_, 0.05);
-    ros::param::param<bool>("~dlo/odomNode/preprocessing/voxelFilter/submap/use", this->vf_submap_use_, false);
-    ros::param::param<double>("~dlo/odomNode/preprocessing/voxelFilter/submap/res", this->vf_submap_res_, 0.1);
-
-    // Adaptive Parameters
-    ros::param::param<bool>("~dlo/adaptiveParams", this->adaptive_params_use_, false);
-
-    // Odom
-    ros::param::param<bool>("~dlo/odom", this->odom_use_, false);
-    ros::param::param<int>("~dlo/odomNode/odom/bufferSize", this->odom_buffer_size_, 2000);
-
-    // IMU
-    ros::param::param<bool>("~dlo/imu", this->imu_use_, false);
-    ros::param::param<int>("~dlo/odomNode/imu/calibTime", this->imu_calib_time_, 3);
-    ros::param::param<int>("~dlo/odomNode/imu/bufferSize", this->imu_buffer_size_, 2000);
-
-    // Map
-    ros::param::param<double>("~dlo/mapNode/publishFreq", this->map_publish_freq_, 1.0);
-    ros::param::param<double>("~dlo/mapNode/leafSize", this->map_vf_leaf_size_, 0.5);
-
-    // GICP
-    ros::param::param<int>("~dlo/odomNode/gicp/minNumPoints", this->gicp_min_num_points_, 100);
-    ros::param::param<int>("~dlo/odomNode/gicp/s2s/kCorrespondences", this->gicps2s_k_correspondences_, 20);
-    ros::param::param<double>("~dlo/odomNode/gicp/s2s/maxCorrespondenceDistance", this->gicps2s_max_corr_dist_, std::sqrt(std::numeric_limits<double>::max()));
-    ros::param::param<int>("~dlo/odomNode/gicp/s2s/maxIterations", this->gicps2s_max_iter_, 64);
-    ros::param::param<double>("~dlo/odomNode/gicp/s2s/transformationEpsilon", this->gicps2s_transformation_ep_, 0.0005);
-    ros::param::param<double>("~dlo/odomNode/gicp/s2s/euclideanFitnessEpsilon", this->gicps2s_euclidean_fitness_ep_, -std::numeric_limits<double>::max());
-    ros::param::param<int>("~dlo/odomNode/gicp/s2s/ransac/iterations", this->gicps2s_ransac_iter_, 0);
-    ros::param::param<double>("~dlo/odomNode/gicp/s2s/ransac/outlierRejectionThresh", this->gicps2s_ransac_inlier_thresh_, 0.05);
-    ros::param::param<int>("~dlo/odomNode/gicp/s2m/kCorrespondences", this->gicps2m_k_correspondences_, 20);
-    ros::param::param<double>("~dlo/odomNode/gicp/s2m/maxCorrespondenceDistance", this->gicps2m_max_corr_dist_, std::sqrt(std::numeric_limits<double>::max()));
-    ros::param::param<int>("~dlo/odomNode/gicp/s2m/maxIterations", this->gicps2m_max_iter_, 64);
-    ros::param::param<double>("~dlo/odomNode/gicp/s2m/transformationEpsilon", this->gicps2m_transformation_ep_, 0.0005);
-    ros::param::param<double>("~dlo/odomNode/gicp/s2m/euclideanFitnessEpsilon", this->gicps2m_euclidean_fitness_ep_, -std::numeric_limits<double>::max());
-    ros::param::param<int>("~dlo/odomNode/gicp/s2m/ransac/iterations", this->gicps2m_ransac_iter_, 0);
-    ros::param::param<double>("~dlo/odomNode/gicp/s2m/ransac/outlierRejectionThresh", this->gicps2m_ransac_inlier_thresh_, 0.05);
-
-    tf::TransformListener tf_listener;
-    tf::StampedTransform transform;
-    try
-    {
-        tf_listener.waitForTransform(this->baselink_frame, this->lidar_frame, ros::Time(0), ros::Duration(5.0));
-        tf_listener.lookupTransform(this->baselink_frame, this->lidar_frame, ros::Time(0), transform);
-    }
-    catch (tf::TransformException ex)
-    {
-        ROS_ERROR_STREAM("Cannot get transform [" << this->baselink_frame << " -> " << this->lidar_frame << "]. Error: [" << ex.what() << "]");
-    }
-
-    tf::transformTFToEigen(transform, baselink_tf_lidar_);
-
-    std::cout << "baselink_tf_lidar: [(" << baselink_tf_lidar_.translation().transpose() << "), ("
-              << baselink_tf_lidar_.rotation().eulerAngles(0, 1, 2).transpose() << ")]\n";
+    this->map_publish_timer.stop();
 }
 
 /**
@@ -479,6 +539,7 @@ void OdomNode::publishTransform()
     catch (tf::TransformException ex)
     {
         ROS_ERROR_STREAM("Cannot get transform [" << this->odom_frame << "]->[" << this->baselink_frame << "]. Exception: " << ex.what());
+        return;
     }
 
     Eigen::Isometry3d odom_2_bl;
@@ -518,9 +579,9 @@ void OdomNode::publishKeyframe()
     this->kf.header.frame_id = this->map_frame;
     this->kf.child_frame_id = this->baselink_frame;
 
-    this->kf.pose.pose.position.x = this->pose[0];
-    this->kf.pose.pose.position.y = this->pose[1];
-    this->kf.pose.pose.position.z = this->pose[2];
+    this->kf.pose.pose.position.x = this->pose.x();
+    this->kf.pose.pose.position.y = this->pose.y();
+    this->kf.pose.pose.position.z = this->pose.z();
 
     this->kf.pose.pose.orientation.w = this->rotq.w();
     this->kf.pose.pose.orientation.x = this->rotq.x();
@@ -538,6 +599,33 @@ void OdomNode::publishKeyframe()
         keyframe_cloud_ros.header.frame_id = this->map_frame;
         this->keyframe_pub.publish(keyframe_cloud_ros);
     }
+}
+
+void OdomNode::publishAllKeyframes()
+{
+    geometry_msgs::PoseArray keyframe_pose_array;
+    keyframe_pose_array.header.stamp = ros::Time::now();
+    keyframe_pose_array.header.frame_id = this->map_frame;
+
+    for (auto kf_pair : this->keyframes->frames())
+    {
+        geometry_msgs::Pose pose;
+
+        pose.position.x = kf_pair.second.pose.translation().x();
+        pose.position.y = kf_pair.second.pose.translation().y();
+        pose.position.z = kf_pair.second.pose.translation().z();
+
+        Eigen::Quaternionf quat(kf_pair.second.pose.rotation());
+
+        pose.orientation.w = quat.w();
+        pose.orientation.x = quat.x();
+        pose.orientation.y = quat.y();
+        pose.orientation.z = quat.z();
+
+        keyframe_pose_array.poses.push_back(pose);
+    }
+
+    this->kf_array_pub.publish(keyframe_pose_array);
 }
 
 /**
@@ -567,6 +655,12 @@ void OdomNode::preprocessPoints()
         this->vf_scan.setInputCloud(this->current_scan);
         this->vf_scan.filter(*this->current_scan);
     }
+}
+
+void OdomNode::setInitialPose(const Eigen::Isometry3f& pose)
+{
+    this->initial_position_ = pose.translation();
+    this->initial_orientation_ = Eigen::Quaternionf(pose.rotation().matrix());
 }
 
 /**
@@ -600,19 +694,6 @@ void OdomNode::initializeInputTarget()
     // compute kdtree and keyframe normals (use gicp_s2s input source as temporary storage because it will be overwritten by setInputSources())
     this->gicp_s2s.setInputSource(this->keyframe_cloud);
     this->gicp_s2s.calculateSourceCovariances();
-
-    // Add keyframe to map frames
-    Keyframe first_kf;
-    first_kf.id = 0;
-    first_kf.timestamp = this->scan_stamp.toSec();
-    first_kf.pose = Eigen::Isometry3f(this->T);
-    first_kf.cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-    *(first_kf.cloud) = *(this->current_scan);
-    first_kf.normals = this->gicp_s2s.getSourceCovariances();
-    keyframes->addFrame(first_kf);
-
-    this->publish_keyframe_thread = std::thread(&OdomNode::publishKeyframe, this);
-    this->publish_keyframe_thread.detach();
 }
 
 /**
@@ -814,6 +895,7 @@ void OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc)
     if (this->target_cloud == nullptr)
     {
         this->initializeInputTarget();
+        this->updateKeyframes();
         return;
     }
 
@@ -1323,6 +1405,11 @@ void OdomNode::computeSpaciousness()
 
 void OdomNode::updateKeyframes()
 {
+    if (this->mode == OpMode::LOCALIZATION)
+    {
+        return;
+    }
+
     // transform point cloud
     this->transformCurrentScan();
 
@@ -1351,29 +1438,36 @@ void OdomNode::updateKeyframes()
         }
     }
 
-    // get closest pose and corresponding rotation
-    Eigen::Quaternionf closest_pose_r(this->keyframes->getFramePose(closest_idx).rotation());
-
-    // calculate difference in orientation
-    Eigen::Quaternionf dq = this->rotq * (closest_pose_r.inverse());
-
-    float theta_rad = 2. * atan2(sqrt(pow(dq.x(), 2) + pow(dq.y(), 2) + pow(dq.z(), 2)), dq.w());
-    float theta_deg = theta_rad * (180.0 / M_PI);
-
     // update keyframe
     bool newKeyframe = false;
 
-    if (abs(closest_d) > this->keyframe_thresh_dist_ || abs(theta_deg) > this->keyframe_thresh_rot_)
+    if (num_nearby == 0)
     {
         newKeyframe = true;
     }
-    if (abs(closest_d) <= this->keyframe_thresh_dist_)
+    else
     {
-        newKeyframe = false;
-    }
-    if (abs(closest_d) <= this->keyframe_thresh_dist_ && abs(theta_deg) > this->keyframe_thresh_rot_ && num_nearby <= 1)
-    {
-        newKeyframe = true;
+        // get closest pose and corresponding rotation
+        Eigen::Quaternionf closest_pose_r(this->keyframes->getFramePose(closest_idx).rotation());
+
+        // calculate difference in orientation
+        Eigen::Quaternionf dq = this->rotq * (closest_pose_r.inverse());
+
+        float theta_rad = 2. * atan2(sqrt(pow(dq.x(), 2) + pow(dq.y(), 2) + pow(dq.z(), 2)), dq.w());
+        float theta_deg = theta_rad * (180.0 / M_PI);
+
+        if (abs(closest_d) > this->keyframe_thresh_dist_ || abs(theta_deg) > this->keyframe_thresh_rot_)
+        {
+            newKeyframe = true;
+        }
+        if (abs(closest_d) <= this->keyframe_thresh_dist_)
+        {
+            newKeyframe = false;
+        }
+        if (abs(closest_d) <= this->keyframe_thresh_dist_ && abs(theta_deg) > this->keyframe_thresh_rot_ && num_nearby <= 1)
+        {
+            newKeyframe = true;
+        }
     }
 
     if (newKeyframe)
@@ -1392,9 +1486,7 @@ void OdomNode::updateKeyframes()
         this->gicp_s2s.calculateSourceCovariances();
 
         // update keyframe map
-        Keyframe kf;
-        kf.id = this->keyframes->size();
-        kf.timestamp = this->scan_stamp.toSec();
+        Keyframe<int> kf(this->keyframes->size(), this->scan_stamp.toSec());
         kf.pose = Eigen::Isometry3f(this->T);
         kf.cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
         kf.normals = this->gicp_s2s.getSourceCovariances();
@@ -1435,6 +1527,92 @@ void OdomNode::setAdaptiveParams()
 
     // set concave hull alpha
     this->keyframes->setCvHullAlpha(this->keyframe_thresh_dist_);
+}
+
+bool OdomNode::saveCallback(er_file_io_msgs::HandleFile::Request& request, er_file_io_msgs::HandleFile::Response& response)
+{
+    saveMapFramesToDisk(this->keyframes->frames(), this->map_directory + "/" + request.file_path_and_name);
+    return true;
+}
+
+bool OdomNode::loadCallback(er_file_io_msgs::HandleFile::Request& request, er_file_io_msgs::HandleFile::Response& response)
+{
+    // KeyframeMap<int> frames = loadMapFramesFromDisk(request.file_path_and_name);
+    // this->keyframes = std::make_shared<Frames>(this->submap_params, frames);
+    return true;
+}
+
+bool OdomNode::resetCallback(er_nav_msgs::SetLocalizationState::Request& request, er_nav_msgs::SetLocalizationState::Response& response)
+{
+    std::cout << "[OdomNode::resetCallback]: Requested localization mode [" << std::boolalpha << request.localization_mode << "], requested map name ["
+              << request.file_tag << "], current #keyframes [" << this->keyframes->size() << "]\n";
+
+    // Stop sensor data subscribers
+    std::cout << "[OdomNode::resetCallback]: Stopping subscribers to sensor data ...\n";
+    stopSubscribers();
+
+    // Cache keyframes
+    KeyframeMap<int> cached_frames;
+    cached_frames.clear();
+    if (this->keyframes->size() > 0)
+    {
+        cached_frames = this->keyframes->frames();
+    }
+
+    // Re-init class variables
+    init();
+
+    if (!request.localization_mode)
+    {
+        // Switch to SLAM mode
+        this->mode = OpMode::SLAM;
+        this->keyframes.reset();
+        this->keyframes = std::make_shared<Frames>(this->submap_params, cached_frames);
+
+        std::cout << "[OdomNode::resetCallback]: Reset node to SLAM mode with existing map\n";
+    }
+    else if (!request.file_tag.empty())
+    {
+        // Switch to LOCALIZATION mode with requested map
+        this->mode = OpMode::LOCALIZATION;
+        this->map_name = request.file_tag;
+        this->loadMap();
+
+        std::cout << "[OdomNode::resetCallback]: Reset node to LOCALIZATION mode with requested map\n";
+    }
+    else if (this->keyframes->size() > 0)
+    {
+        // Requested map name is empty
+        // Switch to LOCALIZATION mode with existing map
+        this->mode = OpMode::LOCALIZATION;
+        this->keyframes.reset();
+        this->keyframes = std::make_shared<Frames>(this->submap_params, cached_frames);
+
+        std::cout << "[OdomNode::resetCallback]: Reset node to LOCALIZATION mode with existing map\n";
+    }
+    else
+    {
+        std::cout << "[OdomNode::resetCallback]: Cannot reset node\n";
+        response.success = false;
+        return true;
+    }
+
+    // Start sensor data subscribers
+    std::cout << "[OdomNode::resetCallback]: Starting subscribers to sensor data ...\n";
+    startSubscribers();
+
+    response.success = true;
+    return true;
+}
+
+bool OdomNode::getCurrentWaypointCallback(er_nav_msgs::GetCurrentWaypoint::Request& request, er_nav_msgs::GetCurrentWaypoint::Response& response)
+{
+    return true;
+}
+
+bool OdomNode::getWaypointByIdCallback(er_nav_msgs::GetWaypointById::Request& request, er_nav_msgs::GetWaypointById::Response& response)
+{
+    return true;
 }
 
 /**

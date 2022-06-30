@@ -26,6 +26,10 @@ include_directories(${GTSAM_INCLUDE_DIR})
 add_definitions(${GTSAM_DEFINITIONS})
 link_directories(${GTSAM_LIBRARY_DIRS})
 
+find_package( Boost REQUIRED COMPONENTS system filesystem )
+include_directories(${Boost_INCLUDE_DIRS})
+link_directories(${Boost_LIBRARY_DIRS})
+
 include(FindOpenMP)
 if(OPENMP_FOUND)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
@@ -39,25 +43,24 @@ set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 find_package(Threads REQUIRED)
 
-find_package(catkin REQUIRED COMPONENTS
+set(CATKIN_PACKAGE_DEPS
   roscpp
   std_msgs
   sensor_msgs
   geometry_msgs
   pcl_ros
+  pcl_conversions
   tf_conversions
   eigen_conversions
+  er_nav_msgs
+  er_file_io_msgs
 )
+
+find_package(catkin REQUIRED COMPONENTS ${CATKIN_PACKAGE_DEPS})
 
 catkin_package(
   CATKIN_DEPENDS
-    roscpp
-    std_msgs
-    sensor_msgs
-    geometry_msgs
-    pcl_ros
-    tf_conversions
-    eigen_conversions
+    ${CATKIN_PACKAGE_DEPS}
   INCLUDE_DIRS
     include
   LIBRARIES
@@ -86,19 +89,20 @@ target_include_directories(nano_gicp PUBLIC include ${PCL_INCLUDE_DIRS} ${EIGEN3
 # Frames
 add_library(frames STATIC
   src/frames/frames.cc
+  include/frames/map_io.h
 )
 add_dependencies(frames ${catkin_EXPORTED_TARGETS})
-target_link_libraries(frames ${PCL_LIBRARIES})
+target_link_libraries(frames ${PCL_LIBRARIES} nano_gicp)
 target_include_directories(frames PUBLIC include ${PCL_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIR})
 
 # Odometry Node
 add_executable(dlo_odom_node src/dlo/odom_node.cc src/dlo/odom.cc)
 add_dependencies(dlo_odom_node ${catkin_EXPORTED_TARGETS})
 target_compile_options(dlo_odom_node PRIVATE ${OpenMP_FLAGS})
-target_link_libraries(dlo_odom_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp gtsam frames)
+target_link_libraries(dlo_odom_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${Boost_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp gtsam frames)
 
 # Mapping Node
-add_executable (dlo_map_node src/dlo/map_node.cc src/dlo/map.cc)
+add_executable(dlo_map_node src/dlo/map_node.cc src/dlo/map.cc)
 add_dependencies(dlo_map_node ${catkin_EXPORTED_TARGETS})
 target_compile_options(dlo_map_node PRIVATE ${OpenMP_FLAGS})
 target_link_libraries(dlo_map_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads)

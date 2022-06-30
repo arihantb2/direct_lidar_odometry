@@ -7,18 +7,39 @@
  *
  ***********************************************************/
 
-#include "dlo/dlo.h"
+#include <dlo/dlo.h>
+#include <frames/frames.h>
+#include <frames/map_io.h>
+
+#include <er_nav_msgs/GetCurrentWaypoint.h>
+#include <er_nav_msgs/GetWaypointById.h>
+#include <er_nav_msgs/SetLocalizationState.h>
+#include <er_file_io_msgs/HandleFile.h>
+
+#include <ros/publisher.h>
+#include <ros/subscriber.h>
+#include <ros/timer.h>
+#include <ros/service.h>
+#include <ros/service_client.h>
+
 #include <gtsam/nonlinear/ISAM2.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
 #include <gtsam/slam/BetweenFactor.h>
 #include <gtsam/slam/PriorFactor.h>
 #include <gtsam/geometry/Pose3.h>
-#include <frames/frames.h>
+
 #include <memory>
 
 namespace dlo
 {
+enum class OpMode : int
+{
+    UNKNOWN = -1,
+    LOCALIZATION = 0,
+    SLAM = 1,
+};
+
 class OdomNode
 {
 public:
@@ -34,11 +55,25 @@ public:
     void stop();
 
 private:
+    void init();
+    void loadMap();
+
+    void startSubscribers();
+    void stopSubscribers();
+
+    void setInitialPose(const Eigen::Isometry3f& pose);
+
     void abortTimerCB(const ros::TimerEvent& e);
     void mapPublishTimerCB(const ros::TimerEvent& e);
     void icpCB(const sensor_msgs::PointCloud2ConstPtr& pc);
     void imuCB(const sensor_msgs::Imu::ConstPtr& imu);
     void odomCB(const nav_msgs::Odometry::ConstPtr& odom);
+
+    bool saveCallback(er_file_io_msgs::HandleFile::Request& request, er_file_io_msgs::HandleFile::Response& response);
+    bool loadCallback(er_file_io_msgs::HandleFile::Request& request, er_file_io_msgs::HandleFile::Response& response);
+    bool resetCallback(er_nav_msgs::SetLocalizationState::Request& request, er_nav_msgs::SetLocalizationState::Response& response);
+    bool getCurrentWaypointCallback(er_nav_msgs::GetCurrentWaypoint::Request& request, er_nav_msgs::GetCurrentWaypoint::Response& response);
+    bool getWaypointByIdCallback(er_nav_msgs::GetWaypointById::Request& request, er_nav_msgs::GetWaypointById::Response& response);
 
     void getParams();
 
@@ -46,6 +81,7 @@ private:
     void publishPose();
     void publishTransform();
     void publishKeyframe();
+    void publishAllKeyframes();
     void publishMap();
 
     void preprocessPoints();
@@ -74,6 +110,8 @@ private:
 
     void debug();
 
+    OpMode mode;
+
     double first_imu_time;
 
     ros::NodeHandle nh;
@@ -87,12 +125,19 @@ private:
     ros::Publisher lidar_odom_pub;
     ros::Publisher pose_pub;
     ros::Publisher keyframe_pub;
+    ros::Publisher kf_array_pub;
     ros::Publisher kf_pub;
     ros::Publisher full_keyframe_pub;
     ros::Publisher submap_pub;
     ros::Publisher map_pub;
 
-    Frames::Params submap_params;
+    ros::ServiceServer save_map_service;
+    ros::ServiceServer load_map_service;
+    ros::ServiceServer get_current_waypoint_service;
+    ros::ServiceServer get_waypoint_by_id_service;
+    ros::ServiceServer reset_service;
+
+    Frames::SubmapParams submap_params;
     std::shared_ptr<Frames> keyframes;
 
     std::vector<Eigen::Isometry3f> trajectory;
@@ -106,6 +151,9 @@ private:
 
     std::atomic<bool> dlo_initialized;
     std::atomic<bool> imu_calibrated;
+
+    std::string map_directory;
+    std::string map_name;
 
     std::string map_frame;
     std::string odom_frame;

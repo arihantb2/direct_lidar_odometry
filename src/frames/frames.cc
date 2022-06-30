@@ -2,11 +2,23 @@
 
 namespace dlo
 {
-Frames::Frames(const Params& params) : params_{ params }
+Frames::Frames(const SubmapParams& params) : params_{ params }
+{
+    init();
+}
+
+Frames::Frames(const SubmapParams& params, const KeyframeMap<int>& keyframes) : params_{ params }
+{
+    init();
+
+    frames_ = keyframes;
+}
+
+void Frames::init()
 {
     frames_.clear();
 
-    this->submap_cloud_ = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+    this->submap_cloud_ = PointCloud::Ptr(new PointCloud);
     this->submap_has_changed_ = true;
     this->submap_kf_idx_prev_.clear();
 
@@ -14,8 +26,8 @@ Frames::Frames(const Params& params) : params_{ params }
     this->concave_hull_.setDimension(3);
     this->concave_hull_.setKeepInformation(true);
 
-    submap_cloud_ = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-    map_cloud_ = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+    submap_cloud_ = PointCloud::Ptr(new PointCloud);
+    map_cloud_ = PointCloud::Ptr(new PointCloud);
 
     map_changed_ = true;
     submap_has_changed_ = true;
@@ -26,7 +38,7 @@ Frames::~Frames()
     submap_cloud_.reset();
 }
 
-bool Frames::addFrame(const Keyframe& frame)
+bool Frames::addFrame(const Keyframe<int>& frame)
 {
     if (frames_.find(frame.id) != frames_.end())
     {
@@ -72,6 +84,7 @@ bool Frames::setFramePose(const unsigned int idx, const Eigen::Isometry3f& pose)
 
     frames_.at(idx).pose = pose;
     map_changed_ = true;
+
     return true;
 }
 
@@ -231,13 +244,13 @@ void Frames::buildSubmap(Eigen::Vector3f curr_pose)
         this->submap_has_changed_ = true;
 
         // reinitialize submap cloud, normals
-        pcl::PointCloud<PointType>::Ptr submap_cloud(new pcl::PointCloud<PointType>);
-        pcl::PointCloud<PointType>::Ptr transformed_cloud(new pcl::PointCloud<PointType>);
+        PointCloud::Ptr submap_cloud(new PointCloud);
+        PointCloud::Ptr transformed_cloud(new PointCloud);
         this->submap_normals_.clear();
 
         for (auto k : this->submap_kf_idx_curr_)
         {
-            transformed_cloud.reset(new pcl::PointCloud<PointType>);
+            transformed_cloud.reset(new PointCloud);
             pcl::transformPointCloud(*this->frames_.at(k).cloud, *transformed_cloud, this->frames_.at(k).pose.matrix());
 
             // create current submap cloud
@@ -261,7 +274,7 @@ void Frames::computeConvexHull()
     }
 
     // create a pointcloud with points at keyframes
-    pcl::PointCloud<PointType>::Ptr cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+    PointCloud::Ptr cloud = PointCloud::Ptr(new PointCloud);
 
     for (unsigned int kf_idx = 0; kf_idx < this->frames_.size(); kf_idx++)
     {
@@ -276,7 +289,7 @@ void Frames::computeConvexHull()
     this->convex_hull_.setInputCloud(cloud);
 
     // get the indices of the keyframes on the convex hull
-    pcl::PointCloud<PointType>::Ptr convex_points = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+    PointCloud::Ptr convex_points = PointCloud::Ptr(new PointCloud);
     this->convex_hull_.reconstruct(*convex_points);
 
     pcl::PointIndices::Ptr convex_hull_point_idx = pcl::PointIndices::Ptr(new pcl::PointIndices);
@@ -298,7 +311,7 @@ void Frames::computeConcaveHull()
     }
 
     // create a pointcloud with points at keyframes
-    pcl::PointCloud<PointType>::Ptr cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+    PointCloud::Ptr cloud = PointCloud::Ptr(new PointCloud);
 
     for (unsigned int kf_idx = 0; kf_idx < this->frames_.size(); kf_idx++)
     {
@@ -313,7 +326,7 @@ void Frames::computeConcaveHull()
     this->concave_hull_.setInputCloud(cloud);
 
     // get the indices of the keyframes on the concave hull
-    pcl::PointCloud<PointType>::Ptr concave_points = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+    PointCloud::Ptr concave_points = PointCloud::Ptr(new PointCloud);
     this->concave_hull_.reconstruct(*concave_points);
 
     pcl::PointIndices::Ptr concave_hull_point_idx = pcl::PointIndices::Ptr(new pcl::PointIndices);
@@ -361,5 +374,4 @@ void Frames::pushSubmapIndices(std::vector<float> dists, int k, std::vector<int>
         }
     }
 }
-
 }  // namespace dlo

@@ -1,5 +1,8 @@
+#pragma once
+
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
+#include <pcl/register_point_struct.h>
 #include <pcl/surface/concave_hull.h>
 #include <pcl/surface/convex_hull.h>
 #include <pcl_conversions/pcl_conversions.h>
@@ -11,44 +14,91 @@
 
 #include <map>
 
+#include <frames/point_types.h>
+
 namespace dlo
 {
-using PointType = pcl::PointXYZI;
 using PointCloud = pcl::PointCloud<PointType>;
 using FrameNormals = std::vector<Eigen::Matrix4d, Eigen::aligned_allocator<Eigen::Matrix4d>>;
+using PoseCloud = pcl::PointCloud<PoseType>;
 
+template <typename T>
 struct Keyframe
 {
-    Keyframe() : id{ -1 }
+    Keyframe() : id{}
     {
+        this->init();
     }
 
-    int id;
+    Keyframe(T _id) : id{ _id }
+    {
+        this->init();
+    }
+
+    Keyframe(T _id, double _timestamp) : id{ _id }, timestamp{ _timestamp }
+    {
+        this->init();
+    }
+
+    void init()
+    {
+        this->pose.setIdentity();
+        this->cloud.reset();
+        this->normals.clear();
+    }
+
+    PointCloud::Ptr getTransformedCloud() const
+    {
+        PointCloud::Ptr tf_cloud(new PointCloud);
+
+        if (this->cloud != nullptr)
+        {
+            pcl::transformPointCloud(*this->cloud, *tf_cloud, this->pose.matrix());
+        }
+
+        return tf_cloud;
+    }
+
+    T id;
     double timestamp;
     Eigen::Isometry3f pose;
     PointCloud::Ptr cloud;
     FrameNormals normals;
 };
 
+template <typename IdType = int>
+using KeyframeList = std::vector<Keyframe<IdType>>;
+
+template <typename IdType = int>
+using KeyframeMap = std::map<IdType, Keyframe<IdType>>;
+
 class Frames
 {
 public:
-    struct Params
+    struct SubmapParams
     {
         int submap_knn_;
         int submap_kcv_;
         int submap_kcc_;
     };
 
-    Frames(const Params& params);
+    Frames(const SubmapParams& params);
+    Frames(const SubmapParams&, const KeyframeMap<int>& keyframes);
     ~Frames();
 
-    bool addFrame(const Keyframe& frame);
+    void init();
+
+    bool addFrame(const Keyframe<int>& frame);
     void removeFrame(const unsigned int& idx);
 
-    std::map<int, Keyframe> frames() const
+    KeyframeMap<int> frames() const
     {
-        return frames_;
+        return this->frames_;
+    }
+
+    KeyframeMap<int> operator()() const
+    {
+        return this->frames_;
     }
 
     void setCvHullAlpha(double alpha)
@@ -58,22 +108,22 @@ public:
 
     bool submapHasChanged() const
     {
-        return submap_has_changed_;
+        return this->submap_has_changed_;
     }
 
     PointCloud::Ptr submapCloud() const
     {
-        return submap_cloud_;
+        return this->submap_cloud_;
     }
 
     FrameNormals submapNormals() const
     {
-        return submap_normals_;
+        return this->submap_normals_;
     }
 
     unsigned int size()
     {
-        return frames_.size();
+        return this->frames_.size();
     }
 
     bool setFramePose(const unsigned int idx, const Eigen::Isometry3f& pose);
@@ -82,9 +132,9 @@ public:
     PointCloud::Ptr getFrameCloud(const unsigned int idx) const;
     FrameNormals getFrameNormals(const unsigned int idx) const;
 
+    void buildMap();
     void buildSubmap(Eigen::Vector3f pose);
 
-    void buildMap();
     PointCloud::Ptr getMap();
     PointCloud::Ptr getMapDS(const double leaf_size);
 
@@ -93,7 +143,7 @@ private:
     void computeConcaveHull();
     void pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frame_indices);
 
-    std::map<int, Keyframe> frames_;
+    KeyframeMap<int> frames_;
 
     pcl::ConvexHull<PointType> convex_hull_;
     pcl::ConcaveHull<PointType> concave_hull_;
@@ -112,6 +162,6 @@ private:
 
     pcl::VoxelGrid<PointType> voxelgrid;
 
-    Params params_;
+    SubmapParams params_;
 };
 }  // namespace dlo
