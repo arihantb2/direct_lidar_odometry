@@ -16,9 +16,9 @@ dlo:
   imu: true
   gravityAlign: true
 
-  mode: 0 # 0: LOCALIZATION, 1: SLAM
-  mapName: 'test-dlo-map-save.1656624488.699566'
-  mapDirectory: '/home/arihant/data/maps'
+  mode: 1 # 0: LOCALIZATION, 1: SLAM
+  mapName: ''
+  mapDirectory: '/mnt/usb_data/site_data/maps'
 
   odomNode:
     map_frame: map
