@@ -26,7 +26,7 @@ include_directories(${GTSAM_INCLUDE_DIR})
 add_definitions(${GTSAM_DEFINITIONS})
 link_directories(${GTSAM_LIBRARY_DIRS})
 
-find_package( Boost REQUIRED COMPONENTS system filesystem )
+find_package( Boost REQUIRED COMPONENTS system filesystem timer)
 include_directories(${Boost_INCLUDE_DIRS})
 link_directories(${Boost_LIBRARY_DIRS})
 
