@@ -116,3 +116,27 @@ target_link_libraries(test_nano_gicp ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${Open
 add_executable(test_transform_point src/test/test_transform_point.cpp)
 add_dependencies(test_transform_point ${catkin_EXPORTED_TARGETS})
 target_link_libraries(test_transform_point ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
+## Install
+install(
+  TARGETS
+    # Libraries
+    nano_gicp
+    nanoflann
+    frames
+
+    # Executables
+    dlo_odom_node
+    dlo_map_node
+
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+install(
+  DIRECTORY
+    config
+    launch
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
+)
