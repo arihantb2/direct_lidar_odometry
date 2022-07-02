@@ -64,9 +64,9 @@ catkin_package(
   INCLUDE_DIRS
     include
   LIBRARIES
-    ${PROJECT_NAME}
     nano_gicp
     nanoflann
+    frames
 )
 
 include_directories(include ${catkin_INCLUDE_DIRS})
@@ -136,7 +136,7 @@ install(
 
 install(
   DIRECTORY
-    config
+    cfg
     launch
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 )
