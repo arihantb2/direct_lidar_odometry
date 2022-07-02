@@ -275,43 +275,6 @@ void OdomNode::init()
 
     this->metrics.spaciousness.push_back(0.);
 
-    // CPU Specs
-    char CPUBrandString[0x40];
-    unsigned int CPUInfo[4] = { 0, 0, 0, 0 };
-    __cpuid(0x80000000, CPUInfo[0], CPUInfo[1], CPUInfo[2], CPUInfo[3]);
-    unsigned int nExIds = CPUInfo[0];
-    memset(CPUBrandString, 0, sizeof(CPUBrandString));
-    for (unsigned int i = 0x80000000; i <= nExIds; ++i)
-    {
-        __cpuid(i, CPUInfo[0], CPUInfo[1], CPUInfo[2], CPUInfo[3]);
-        if (i == 0x80000002)
-            memcpy(CPUBrandString, CPUInfo, sizeof(CPUInfo));
-        else if (i == 0x80000003)
-            memcpy(CPUBrandString + 16, CPUInfo, sizeof(CPUInfo));
-        else if (i == 0x80000004)
-            memcpy(CPUBrandString + 32, CPUInfo, sizeof(CPUInfo));
-    }
-
-    this->cpu_type = CPUBrandString;
-    boost::trim(this->cpu_type);
-
-    FILE* file;
-    struct tms timeSample;
-    char line[128];
-
-    this->lastCPU = times(&timeSample);
-    this->lastSysCPU = timeSample.tms_stime;
-    this->lastUserCPU = timeSample.tms_utime;
-
-    file = fopen("/proc/cpuinfo", "r");
-    this->numProcessors = 0;
-    while (fgets(line, 128, file) != NULL)
-    {
-        if (strncmp(line, "processor", 9) == 0)
-            this->numProcessors++;
-    }
-    fclose(file);
-
     ROS_INFO("DLO Odom Node Initialized");
 }
 
@@ -1242,9 +1205,6 @@ void OdomNode::integrateOdom()
     this->odom_SE3 = Eigen::Matrix4f::Identity();
     this->odom_SE3.block<3, 3>(0, 0) = q.toRotationMatrix();
     this->odom_SE3.block<3, 1>(0, 3) = t;
-
-    ROS_DEBUG_STREAM("[OdomNode::integrateOdom]: Odom frame size: " << odom_frames.size());
-    ROS_DEBUG_STREAM("[OdomNode::integrateOdom]: odom_SE3:\n" << this->odom_SE3);
 }
 
 /**
@@ -1649,71 +1609,10 @@ void OdomNode::debug()
         }
     }
 
-    if (length_traversed == 0)
-    {
-        this->publish_keyframe_thread = std::thread(&OdomNode::publishKeyframe, this);
-        this->publish_keyframe_thread.detach();
-    }
-
-    // Average computation time
-    double avg_comp_time = std::accumulate(this->comp_times.begin(), this->comp_times.end(), 0.0) / this->comp_times.size();
-
-    // RAM Usage
-    double vm_usage = 0.0;
-    double resident_set = 0.0;
-    std::ifstream stat_stream("/proc/self/stat", std::ios_base::in);  // get info from proc directory
-    std::string pid, comm, state, ppid, pgrp, session, tty_nr;
-    std::string tpgid, flags, minflt, cminflt, majflt, cmajflt;
-    std::string utime, stime, cutime, cstime, priority, nice;
-    std::string num_threads, itrealvalue, starttime;
-    unsigned long vsize;
-    long rss;
-    stat_stream >> pid >> comm >> state >> ppid >> pgrp >> session >> tty_nr >> tpgid >> flags >> minflt >> cminflt >> majflt >> cmajflt >> utime >> stime >>
-        cutime >> cstime >> priority >> nice >> num_threads >> itrealvalue >> starttime >> vsize >> rss;  // don't care about the rest
-    stat_stream.close();
-    long page_size_kb = sysconf(_SC_PAGE_SIZE) / 1024;  // for x86-64 is configured to use 2MB pages
-    vm_usage = vsize / 1024.0;
-    resident_set = rss * page_size_kb;
-
-    // CPU Usage
-    struct tms timeSample;
-    clock_t now;
-    double cpu_percent;
-    now = times(&timeSample);
-    if (now <= this->lastCPU || timeSample.tms_stime < this->lastSysCPU || timeSample.tms_utime < this->lastUserCPU)
-    {
-        cpu_percent = -1.0;
-    }
-    else
-    {
-        cpu_percent = (timeSample.tms_stime - this->lastSysCPU) + (timeSample.tms_utime - this->lastUserCPU);
-        cpu_percent /= (now - this->lastCPU);
-        cpu_percent /= this->numProcessors;
-        cpu_percent *= 100.;
-    }
-    this->lastCPU = now;
-    this->lastSysCPU = timeSample.tms_stime;
-    this->lastUserCPU = timeSample.tms_utime;
-    this->cpu_percents.push_back(cpu_percent);
-    double avg_cpu_usage = std::accumulate(this->cpu_percents.begin(), this->cpu_percents.end(), 0.0) / this->cpu_percents.size();
-
-    // Print to terminal
-    // printf("\033[2J\033[1;1H");
-
-    // std::cout << std::endl << "==== Direct LiDAR Odometry v" << this->version_ << " ====" << std::endl;
-
-    // std::cout << std::endl << this->cpu_type << " x " << this->numProcessors << std::endl;
-
-    // std::cout << std::endl << std::setprecision(4) << std::fixed;
-    // std::cout << "Position    [xyz]  :: " << this->pose[0] << " " << this->pose[1] << " " << this->pose[2] << std::endl;
-    // std::cout << "Orientation [wxyz] :: " << this->rotq.w() << " " << this->rotq.x() << " " << this->rotq.y() << " " << this->rotq.z() << std::endl;
-    // std::cout << "Distance Traveled  :: " << length_traversed << " meters" << std::endl;
-    // std::cout << "Distance to Origin :: " << (this->pose - this->trajectory[0].translation()).norm();
-    // std::cout << std::endl << std::right << std::setprecision(2) << std::fixed;
-    // std::cout << "Computation Time :: " << std::setfill(' ') << std::setw(6) << this->comp_times.back()*1000. << " ms    // Avg: " << std::setw(5) <<
-    // avg_comp_time*1000. << std::endl; std::cout << "Cores Utilized   :: " << std::setfill(' ') << std::setw(6) << (cpu_percent/100.) * this->numProcessors <<
-    // " cores // Avg: " << std::setw(5) << (avg_cpu_usage/100.) * this->numProcessors << std::endl; std::cout << "CPU Load         :: " << std::setfill(' ') <<
-    // std::setw(6) << cpu_percent << " %     // Avg: " << std::setw(5) << avg_cpu_usage << std::endl; std::cout << "RAM Allocation   :: " << std::setfill(' ')
-    // << std::setw(6) << resident_set/1000. << " MB    // VSZ: " << vm_usage/1000. << " MB" << std::endl;
+    // if (length_traversed == 0)
+    // {
+    //     this->publish_keyframe_thread = std::thread(&OdomNode::publishKeyframe, this);
+    //     this->publish_keyframe_thread.detach();
+    // }
 }
 }  // namespace dlo

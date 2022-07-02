@@ -8,7 +8,6 @@
  ***********************************************************/
 
 #include <atomic>
-#include <cpuid.h>
 #include <fstream>
 #include <iomanip>
 #include <ios>
@@ -19,8 +18,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string>
-#include <sys/times.h>
-#include <sys/vtimes.h>
 #include <thread>
 #include <queue>
 
