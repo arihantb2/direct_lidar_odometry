@@ -16,7 +16,7 @@
   <arg name="wheel_odom_topic" default="/odom"/>
 
   <!-- DLO Odometry Node -->
-  <node ns="er_slam" name="dlo_odom" pkg="direct_lidar_odometry" type="dlo_odom_node" output="screen" clear_params="true">
+  <node ns="er_slam" name="dlo_sam" pkg="direct_lidar_odometry" type="dlo_odom_node" output="screen" clear_params="true">
 
     <!-- Load parameters -->
     <rosparam file="$(find direct_lidar_odometry)/cfg/dlo.yaml" command="load"/>
@@ -31,7 +31,7 @@
     <remap from="~odom" to="dlo/odom"/>
     <remap from="~pose" to="dlo/pose"/>
     <remap from="~keyframe_odom" to="dlo/keyframe_odom"/>
-    <remap from="~map" to="dlo/map"/>
+    <remap from="~map" to="/cloud_pcd"/>
     <remap from="~submap" to="dlo/submap"/>
     <remap from="~keyframe" to="dlo/keyframe"/>
 
