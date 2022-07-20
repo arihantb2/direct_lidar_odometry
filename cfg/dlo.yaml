@@ -28,4 +28,5 @@ dlo:
 
   mapNode:
     publishFreq: 1.0
-    leafSize: 0.25
+    leafSize: 1.0
+    mapPrefix: exr2

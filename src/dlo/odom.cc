@@ -127,6 +127,7 @@ void OdomNode::getParams()
     // Map
     ros::param::param<double>("~dlo/mapNode/publishFreq", this->map_publish_freq_, 1.0);
     ros::param::param<double>("~dlo/mapNode/leafSize", this->map_vf_leaf_size_, 0.5);
+    ros::param::param<std::string>("~dlo/mapNode/mapPrefix", this->map_prefix, "exr2");
 
     // GICP
     ros::param::param<int>("~dlo/odomNode/gicp/minNumPoints", this->gicp_min_num_points_, 100);
@@ -1500,7 +1501,7 @@ bool OdomNode::saveCallback(er_file_io_msgs::HandleFile::Request& request, er_fi
         return true;
     }
 
-    this->map_name = request.file_path_and_name;
+    this->map_name = this->map_prefix + "-" + request.file_path_and_name;
     saveMapFramesToDisk(this->keyframes->frames(), this->map_directory + "/" + this->map_name);
     return true;
 }
@@ -1509,7 +1510,8 @@ bool OdomNode::loadCallback(er_file_io_msgs::HandleFile::Request& request, er_fi
 {
     // KeyframeMap<int> frames = loadMapFramesFromDisk(request.file_path_and_name);
     // this->keyframes = std::make_shared<Frames>(this->submap_params, frames);
-    return true;
+    std::cout << "[OdomNode::loadCallback]: Map load feature is currently disabled\n";
+    return false;
 }
 
 bool OdomNode::resetCallback(er_nav_msgs::SetLocalizationState::Request& request, er_nav_msgs::SetLocalizationState::Response& response)

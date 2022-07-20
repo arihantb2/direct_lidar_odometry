@@ -154,6 +154,7 @@ private:
 
     std::string map_directory;
     std::string map_name;
+    std::string map_prefix;
 
     std::string map_frame;
     std::string odom_frame;
