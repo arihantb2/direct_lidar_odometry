@@ -33,13 +33,6 @@
 
 namespace dlo
 {
-enum class OpMode : int
-{
-    UNKNOWN = -1,
-    LOCALIZATION = 0,
-    SLAM = 1,
-};
-
 class OdomNode
 {
 public:
@@ -56,7 +49,7 @@ public:
 
 private:
     void init();
-    void loadMap();
+    bool loadMap(const std::string& map_name);
 
     void startSubscribers();
     void stopSubscribers();
@@ -109,8 +102,6 @@ private:
     void optimizeTrajectory();
 
     void debug();
-
-    OpMode mode;
 
     double first_imu_time;
 
@@ -304,6 +295,8 @@ private:
     bool imu_use_;
     int imu_calib_time_;
     int imu_buffer_size_;
+
+    bool trajectory_optimization_use_;
 
     double map_publish_freq_;
     double map_vf_leaf_size_;

@@ -7,7 +7,7 @@
  *
  ***********************************************************/
 
-#include "dlo/odom.h"
+#include <dlo/odom.h>
 #include <tf/transform_listener.h>
 #include <geometry_msgs/PoseArray.h>
 
@@ -41,10 +41,7 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
 
     this->init();
 
-    if (this->mode == OpMode::LOCALIZATION)
-    {
-        this->loadMap();
-    }
+    this->loadMap(this->map_name);
 
     this->startSubscribers();
 }
@@ -123,6 +120,9 @@ void OdomNode::getParams()
     ros::param::param<bool>("~dlo/imu", this->imu_use_, false);
     ros::param::param<int>("~dlo/odomNode/imu/calibTime", this->imu_calib_time_, 3);
     ros::param::param<int>("~dlo/odomNode/imu/bufferSize", this->imu_buffer_size_, 2000);
+
+    // Trajectory Optimization
+    ros::param::param<bool>("~dlo/trajectoryOptimization", this->trajectory_optimization_use_, false);
 
     // Map
     ros::param::param<double>("~dlo/mapNode/publishFreq", this->map_publish_freq_, 1.0);
@@ -218,6 +218,7 @@ void OdomNode::init()
     this->imu_meas.lin_accel.y = 0.;
     this->imu_meas.lin_accel.z = 0.;
 
+    this->imu_buffer.clear();
     this->imu_buffer.set_capacity(this->imu_buffer_size_);
     this->first_imu_time = 0.;
 
@@ -231,6 +232,7 @@ void OdomNode::init()
     this->odom_meas.ang_vel.y = 0.;
     this->odom_meas.ang_vel.z = 0.;
 
+    this->odom_buffer.clear();
     this->odom_buffer.set_capacity(this->odom_buffer_size_);
 
     this->original_scan = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
@@ -274,31 +276,41 @@ void OdomNode::init()
     this->vf_scan.setLeafSize(this->vf_scan_res_, this->vf_scan_res_, this->vf_scan_res_);
     this->vf_submap.setLeafSize(this->vf_submap_res_, this->vf_submap_res_, this->vf_submap_res_);
 
+    this->metrics.spaciousness.clear();
     this->metrics.spaciousness.push_back(0.);
 
     ROS_INFO("DLO Odom Node Initialized");
 }
 
-void OdomNode::loadMap()
+bool OdomNode::loadMap(const std::string& mapname)
 {
-    if (this->map_name.empty())
+    if (mapname.empty())
     {
-        return;
+        return false;
     }
 
-    std::string map_path = this->map_directory + "/" + this->map_name;
+    std::string map_path = this->map_directory + "/" + mapname;
     if (boost::filesystem::exists(map_path) && boost::filesystem::is_directory(map_path))
     {
+        this->map_name = mapname;
         KeyframeMap<int> frames = loadMapFramesFromDisk(map_path);
+
+        if (frames.empty())
+        {
+            std::cout << "[OdomNode::loadMap]: Requested map loaded is empty. Failed to load a usable map\n";
+            return false;
+        }
+
         this->keyframes.reset();
         this->keyframes = std::make_shared<Frames>(this->submap_params, frames);
         this->publishAllKeyframes();
 
         std::cout << "[OdomNode::loadMap]: Loaded map [" << map_path << "]\n";
-        return;
+        return true;
     }
 
-    std::cout << "[OdomNode::loadMap]: Failed to load map [" << map_path << "]\n";
+    std::cout << "[OdomNode::loadMap]: Requested map [" << map_path << "] not found. Failed to load map\n";
+    return false;
 }
 
 void OdomNode::startSubscribers()
@@ -505,7 +517,7 @@ void OdomNode::publishTransform()
     }
     catch (tf::TransformException ex)
     {
-        ROS_ERROR_STREAM("Cannot get transform [" << this->odom_frame << "]->[" << this->baselink_frame << "]. Exception: " << ex.what());
+        ROS_DEBUG_STREAM("Cannot get transform [" << this->odom_frame << "] -> [" << this->baselink_frame << "] Exception: " << ex.what());
         return;
     }
 
@@ -800,15 +812,18 @@ void OdomNode::initializeDLO()
         std::cout << "done" << std::endl << std::endl;
     }
 
-    // Add initial pose as prior to gtsam graph
-    gtsam::Pose3 prior_pose(this->T.cast<double>());
-    gtsam::noiseModel::Diagonal::shared_ptr prior_noise = gtsam::noiseModel::Isotropic::Sigma(6, 1e-3);
-    this->graph.add(gtsam::PriorFactor<gtsam::Pose3>(this->gtsam_keyframe_id, prior_pose, prior_noise));
+    if (this->trajectory_optimization_use_)
+    {
+        // Add initial pose as prior to gtsam graph
+        gtsam::Pose3 prior_pose(this->T.cast<double>());
+        gtsam::noiseModel::Diagonal::shared_ptr prior_noise = gtsam::noiseModel::Isotropic::Sigma(6, 1e-3);
+        this->graph.add(gtsam::PriorFactor<gtsam::Pose3>(this->gtsam_keyframe_id, prior_pose, prior_noise));
 
-    this->initial_guess.insert(0, prior_pose);
+        this->initial_guess.insert(0, prior_pose);
 
-    this->gtsam_kf_id_map.insert({ 0, 0 });
-    ++this->gtsam_keyframe_id;
+        this->gtsam_kf_id_map.insert({ 0, 0 });
+        ++this->gtsam_keyframe_id;
+    }
 
     this->trajectory.push_back(Eigen::Isometry3f(this->T));
 
@@ -879,8 +894,11 @@ void OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc)
     // Update current keyframe poses and map
     this->updateKeyframes();
 
-    // Optimize trajectory
-    this->optimizeTrajectory();
+    if (this->trajectory_optimization_use_)
+    {
+        // Optimize trajectory
+        this->optimizeTrajectory();
+    }
 
     // Update next time stamp
     this->prev_frame_stamp = this->curr_frame_stamp;
@@ -1369,11 +1387,6 @@ void OdomNode::computeSpaciousness()
 
 void OdomNode::updateKeyframes()
 {
-    if (this->mode == OpMode::LOCALIZATION)
-    {
-        return;
-    }
-
     // transform point cloud
     this->transformCurrentScan();
 
@@ -1457,8 +1470,11 @@ void OdomNode::updateKeyframes()
         *(kf.cloud) = *(this->current_scan);
         this->keyframes->addFrame(kf);
 
-        // update keyframe id gtsam frame id association map
-        this->gtsam_kf_id_map.insert({ this->gtsam_keyframe_id, kf.id });
+        if (this->trajectory_optimization_use_)
+        {
+            // update keyframe id gtsam frame id association map
+            this->gtsam_kf_id_map.insert({ this->gtsam_keyframe_id, kf.id });
+        }
 
         this->publish_keyframe_thread = std::thread(&OdomNode::publishKeyframe, this);
         this->publish_keyframe_thread.detach();
@@ -1516,61 +1532,41 @@ bool OdomNode::loadCallback(er_file_io_msgs::HandleFile::Request& request, er_fi
 
 bool OdomNode::resetCallback(er_nav_msgs::SetLocalizationState::Request& request, er_nav_msgs::SetLocalizationState::Response& response)
 {
-    std::cout << "[OdomNode::resetCallback]: Requested localization mode [" << std::boolalpha << request.localization_mode << "], requested map name ["
-              << request.file_tag << "], current #keyframes [" << this->keyframes->size() << "]\n";
+    std::cout << "[OdomNode::resetCallback]: Requested new map [" << request.file_tag << "], current map [" << this->map_name << "] with ["
+              << this->keyframes->size() << "] keyframes will be cleared\n";
 
-    // Stop sensor data subscribers
-    std::cout << "[OdomNode::resetCallback]: Stopping subscribers to sensor data ...\n";
-    this->stopSubscribers();
-
-    // Cache keyframes
-    KeyframeMap<int> cached_frames;
-    cached_frames.clear();
-    if (this->keyframes->size() > 0)
+    if (!request.file_tag.empty() && request.file_tag != this->map_name)
     {
-        cached_frames = this->keyframes->frames();
-    }
+        // Stop sensor data subscribers
+        std::cout << "[OdomNode::resetCallback]: Stopping subscribers to sensor data ...\n";
+        this->stopSubscribers();
 
-    // Re-init class variables
-    this->init();
+        // Reset and init class variables
+        // NOTE: This resets the current pose to origin and clears the keyframes
+        this->init();
 
-    if (!request.localization_mode)
-    {
-        // Switch to SLAM mode
-        this->mode = OpMode::SLAM;
-        std::cout << "[OdomNode::resetCallback]: Reset node to SLAM mode with existing map\n";
-    }
-    else if (!request.file_tag.empty())
-    {
-        // Switch to LOCALIZATION mode with requested map
-        this->mode = OpMode::LOCALIZATION;
-        this->map_name = request.file_tag;
-        this->loadMap();
+        // Load new map
+        if (this->loadMap(request.file_tag))
+        {
+            std::cout << "[OdomNode::resetCallback]: Loaded new map [" << request.file_tag << "]\n";
+        }
+        else
+        {
+            std::cout << "[OdomNode::resetCallback]: Reset map\n";
+        }
 
-        std::cout << "[OdomNode::resetCallback]: Reset node to LOCALIZATION mode with requested map\n";
-    }
-    else if (this->keyframes->size() > 0)
-    {
-        // Requested map name is empty
-        // Switch to LOCALIZATION mode with existing map
-        this->mode = OpMode::LOCALIZATION;
-        this->keyframes.reset();
-        this->keyframes = std::make_shared<Frames>(this->submap_params, cached_frames);
+        // Start sensor data subscribers
+        std::cout << "[OdomNode::resetCallback]: Starting subscribers to sensor data ...\n";
+        this->startSubscribers();
 
-        std::cout << "[OdomNode::resetCallback]: Reset node to LOCALIZATION mode with existing map\n";
+        response.success = true;
     }
     else
     {
-        std::cout << "[OdomNode::resetCallback]: Cannot reset node\n";
+        std::cout << "[OdomNode::resetCallback]: Requested map [" << request.file_tag << "] not loaded\n";
         response.success = false;
-        return true;
     }
 
-    // Start sensor data subscribers
-    std::cout << "[OdomNode::resetCallback]: Starting subscribers to sensor data ...\n";
-    this->startSubscribers();
-
-    response.success = true;
     return true;
 }
 
