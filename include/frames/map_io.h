@@ -24,7 +24,7 @@
 
 #include <Eigen/Geometry>
 
-#include <frames/progbar.h>
+// #include <frames/progbar.h>
 
 namespace dlo
 {
@@ -97,7 +97,7 @@ static void saveMapFramesToDisk(const KeyframeMap<int>& frames, const std::strin
     PoseCloud::Ptr frame_poses(new PoseCloud);
     PointCloud::Ptr global_map(new PointCloud);
 
-    utility::progbar bar(std::cout, 80, '=', ' ');
+    // utility::progbar bar(std::cout, 80, '=', ' ');
     for (auto kf_pair : frames)
     {
         std::ostringstream padded_index;
@@ -113,7 +113,7 @@ static void saveMapFramesToDisk(const KeyframeMap<int>& frames, const std::strin
 
         *global_map += *kf_pair.second.getTransformedCloud();
 
-        bar.update(kf_pair.first + 1, frames.size());
+        // bar.update(kf_pair.first + 1, frames.size());
     }
 
     pcl::io::savePCDFileASCII(dir_path + suffix + "/key_frames_positions.pcd", *frame_positions);
@@ -135,7 +135,7 @@ static KeyframeMap<int> loadMapFramesFromDisk(const std::string& dir_path)
     pcl::io::loadPCDFile(dir_path + "/key_frames_poses.pcd", *frame_poses);
 
     KeyframeMap<int> frames;
-    utility::progbar bar(std::cout, 80, '=', ' ');
+    // utility::progbar bar(std::cout, 80, '=', ' ');
     for (size_t i = 0; i < frame_positions->size(); ++i)
     {
         Keyframe<int> frame(i, frame_poses->at(i).time);
@@ -148,7 +148,7 @@ static KeyframeMap<int> loadMapFramesFromDisk(const std::string& dir_path)
         pcl::io::loadPCDFile(dir_path + "/" + padded_index.str() + "-key_frame_points.pcd", *(frame.cloud));
 
         frames.insert({ i, frame });
-        bar.update(i + 1, frame_positions->size());
+        // bar.update(i + 1, frame_positions->size());
     }
 
     fillNormals(frames);

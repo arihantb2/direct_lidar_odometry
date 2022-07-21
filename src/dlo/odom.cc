@@ -1561,10 +1561,28 @@ bool OdomNode::resetCallback(er_nav_msgs::SetLocalizationState::Request& request
 
         response.success = true;
     }
+    else if (request.file_tag.empty())
+    {
+        // Stop sensor data subscribers
+        std::cout << "[OdomNode::resetCallback]: Stopping subscribers to sensor data ...\n";
+        this->stopSubscribers();
+
+        // Reset and init class variables
+        // NOTE: This resets the current pose to origin and clears the keyframes
+        this->init();
+
+        std::cout << "[OdomNode::resetCallback]: Cleared map and recording new map\n";
+
+        // Start sensor data subscribers
+        std::cout << "[OdomNode::resetCallback]: Starting subscribers to sensor data ...\n";
+        this->startSubscribers();
+
+        response.success = true;
+    }
     else
     {
-        std::cout << "[OdomNode::resetCallback]: Requested map [" << request.file_tag << "] not loaded\n";
-        response.success = false;
+        std::cout << "Requested map [" << request.file_tag << "] is already the loaded map. Doing nothing\n";
+        response.success = true;
     }
 
     return true;

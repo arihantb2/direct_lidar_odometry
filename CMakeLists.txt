@@ -11,7 +11,7 @@ cmake_minimum_required(VERSION 3.10.0)
 project(direct_lidar_odometry)
 
 add_compile_options(-std=c++14)
-set(CMAKE_BUILD_TYPE "Debug")
+set(CMAKE_BUILD_TYPE Release)
 
 find_package( PCL REQUIRED )
 include_directories(${PCL_INCLUDE_DIRS})
@@ -30,7 +30,7 @@ find_package( Boost REQUIRED COMPONENTS system filesystem timer)
 include_directories(${Boost_INCLUDE_DIRS})
 link_directories(${Boost_LIBRARY_DIRS})
 
-include(FindOpenMP)
+find_package(OpenMP)
 if(OPENMP_FOUND)
   set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
@@ -61,8 +61,8 @@ find_package(catkin REQUIRED COMPONENTS ${CATKIN_PACKAGE_DEPS})
 catkin_package(
   CATKIN_DEPENDS
     ${CATKIN_PACKAGE_DEPS}
-  INCLUDE_DIRS
-    include
+  # INCLUDE_DIRS
+  #   include
   LIBRARIES
     nano_gicp
     nanoflann
