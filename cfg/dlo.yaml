@@ -15,10 +15,11 @@ dlo:
   odom: false
   imu: true
   gravityAlign: true
+  trajectoryOptimization: false
 
   mode: 1 # 0: LOCALIZATION, 1: SLAM
-  mapName: ''
-  mapDirectory: '/mnt/usb_data/site_data/maps'
+  mapName: ""
+  mapDirectory: "/mnt/usb_data/site_data/maps"
 
   odomNode:
     map_frame: map
@@ -27,6 +28,6 @@ dlo:
     lidar_frame: velodyne_frame
 
   mapNode:
-    publishFreq: 1.0
-    leafSize: 1.0
+    publishFreq: 3.0
+    leafSize: 0.25
     mapPrefix: exr2

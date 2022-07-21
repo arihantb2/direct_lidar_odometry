@@ -149,14 +149,9 @@ void Frames::buildMap()
     map_cloud_.reset();
     map_cloud_ = PointCloud::Ptr(new PointCloud);
 
-    PointCloud::Ptr tf_cloud;
     for (auto kf_pair : frames_)
     {
-        tf_cloud.reset();
-        tf_cloud = PointCloud::Ptr(new PointCloud);
-
-        pcl::transformPointCloud(*kf_pair.second.cloud, *tf_cloud, kf_pair.second.pose.matrix());
-        *map_cloud_ += *tf_cloud;
+        *map_cloud_ += *kf_pair.second.getTransformedCloud();
     }
 
     map_changed_ = false;

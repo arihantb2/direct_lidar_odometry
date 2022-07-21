@@ -56,7 +56,7 @@ public:
 
 private:
     void init();
-    void loadMap();
+    bool loadMap(const std::string& map_name);
 
     void startSubscribers();
     void stopSubscribers();
@@ -304,6 +304,8 @@ private:
     bool imu_use_;
     int imu_calib_time_;
     int imu_buffer_size_;
+
+    bool trajectory_optimization_use_;
 
     double map_publish_freq_;
     double map_vf_leaf_size_;

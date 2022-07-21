@@ -24,6 +24,8 @@
 
 #include <Eigen/Geometry>
 
+#include <frames/progbar.h>
+
 namespace dlo
 {
 constexpr int k_file_index_chars = 6;
@@ -93,14 +95,11 @@ static void saveMapFramesToDisk(const KeyframeMap<int>& frames, const std::strin
 
     PointCloud::Ptr frame_positions(new PointCloud);
     PoseCloud::Ptr frame_poses(new PoseCloud);
-
-    // extract global point cloud map
     PointCloud::Ptr global_map(new PointCloud);
 
+    utility::progbar bar(std::cout, 80, '=', ' ');
     for (auto kf_pair : frames)
     {
-        std::cout << "[saveMapFramesToDisk]: Processing feature cloud [" << (kf_pair.first + 1) << "] ...\n";
-
         std::ostringstream padded_index;
         padded_index << std::internal << std::setfill('0') << std::setw(k_file_index_chars) << std::to_string(kf_pair.first);
 
@@ -114,7 +113,7 @@ static void saveMapFramesToDisk(const KeyframeMap<int>& frames, const std::strin
 
         *global_map += *kf_pair.second.getTransformedCloud();
 
-        std::cout << std::flush;
+        bar.update(kf_pair.first + 1, frames.size());
     }
 
     pcl::io::savePCDFileASCII(dir_path + suffix + "/key_frames_positions.pcd", *frame_positions);
@@ -128,19 +127,20 @@ static void saveMapFramesToDisk(const KeyframeMap<int>& frames, const std::strin
 static KeyframeMap<int> loadMapFramesFromDisk(const std::string& dir_path)
 {
     std::cout << "****************************************************[loadMapFramesFromDisk]****************************************************\n";
-    std::cout << "[loadMapFramesFromDisk]: Loading map from files from [" << dir_path << "] ...\n";
+    std::cout << "[loadMapFramesFromDisk]: Loading map files from [" << dir_path << "] ...\n";
 
-    PointCloud::Ptr positions = boost::make_shared<PointCloud>();
-    PoseCloud::Ptr poses = boost::make_shared<PoseCloud>();
-    pcl::io::loadPCDFile(dir_path + "/key_frames_positions.pcd", *positions);
-    pcl::io::loadPCDFile(dir_path + "/key_frames_poses.pcd", *poses);
+    PointCloud::Ptr frame_positions(new PointCloud);
+    PoseCloud::Ptr frame_poses(new PoseCloud);
+    pcl::io::loadPCDFile(dir_path + "/key_frames_positions.pcd", *frame_positions);
+    pcl::io::loadPCDFile(dir_path + "/key_frames_poses.pcd", *frame_poses);
 
     KeyframeMap<int> frames;
-    for (size_t i = 0; i < positions->size(); ++i)
+    utility::progbar bar(std::cout, 80, '=', ' ');
+    for (size_t i = 0; i < frame_positions->size(); ++i)
     {
-        Keyframe<int> frame(i, poses->at(i).time);
+        Keyframe<int> frame(i, frame_poses->at(i).time);
         frame.cloud = PointCloud::Ptr(new PointCloud);
-        frame.pose = toEigenPose(poses->at(i));
+        frame.pose = toEigenPose(frame_poses->at(i));
 
         std::ostringstream padded_index;
         padded_index << std::internal << std::setfill('0') << std::setw(k_file_index_chars) << std::to_string(i);
@@ -148,11 +148,12 @@ static KeyframeMap<int> loadMapFramesFromDisk(const std::string& dir_path)
         pcl::io::loadPCDFile(dir_path + "/" + padded_index.str() + "-key_frame_points.pcd", *(frame.cloud));
 
         frames.insert({ i, frame });
+        bar.update(i + 1, frame_positions->size());
     }
 
     fillNormals(frames);
 
-    std::cout << "[loadMapFramesFromDisk]: Loaded [" << positions->size() << "] feature clouds\n";
+    std::cout << "[loadMapFramesFromDisk]: Loaded [" << frame_positions->size() << "] feature clouds\n";
     std::cout << "[loadMapFramesFromDisk]: Loading map from [" << dir_path << "] completed\n";
     std::cout << "****************************************************[loadMapFramesFromDisk]****************************************************\n";
 
