@@ -16,15 +16,15 @@ std::default_random_engine rand_engine;
 Eigen::Isometry3f getRandomTransform(const double max_translation, const double max_rotation_deg)
 {
     // Generate random transform
-    Eigen::Isometry3f T;
     std::uniform_real_distribution<double> rand_trans_dist(-1.0 * max_translation, max_translation);
     std::uniform_real_distribution<double> rand_rot_dist(-1.0 * max_rotation_deg * M_PI / 180.0, max_rotation_deg * M_PI / 180.0);
 
-    Eigen::Vector3f translation(rand_trans_dist(rand_engine), rand_trans_dist(rand_engine), rand_trans_dist(rand_engine));
-    Eigen::Quaternionf rotation(Eigen::AngleAxisf(rand_rot_dist(rand_engine), Eigen::Vector3f::UnitX()) *
-                                Eigen::AngleAxisf(rand_rot_dist(rand_engine), Eigen::Vector3f::UnitY()) *
+    Eigen::Vector3f translation(rand_trans_dist(rand_engine), rand_trans_dist(rand_engine), 0.01 * rand_trans_dist(rand_engine));
+    Eigen::Quaternionf rotation(Eigen::AngleAxisf(0.01 * rand_rot_dist(rand_engine), Eigen::Vector3f::UnitX()) *
+                                Eigen::AngleAxisf(0.01 * rand_rot_dist(rand_engine), Eigen::Vector3f::UnitY()) *
                                 Eigen::AngleAxisf(rand_rot_dist(rand_engine), Eigen::Vector3f::UnitZ()));
 
+    Eigen::Isometry3f T;
     T.setIdentity();
     T = T.translate(translation).rotate(rotation);
 
@@ -74,8 +74,8 @@ int main(int argc, char** argv)
 
     // Run GICP
     nano_gicp::NanoGICP<PointType, PointType> gicp;
-    gicp.registerInputSource(cloud);
-    // gicp.setInputSource(cloud);
+    // gicp.registerInputSource(cloud);
+    gicp.setInputSource(cloud);
     gicp.setInputTarget(transformed_cloud);
 
     pcl::PointCloud<PointType>::Ptr aligned_cloud(new pcl::PointCloud<PointType>);

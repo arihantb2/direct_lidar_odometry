@@ -1,0 +1,12 @@
+<launch>
+    <arg name="rviz_config" default="$(find direct_lidar_odometry)/cfg/rviz.rviz"/>
+
+    <include file="$(find direct_lidar_odometry)/launch/default.launch">
+        <arg name="pointcloud_topic" value="/velodyne_points"/>
+        <arg name="imu_topic" value="/imu/data"/>
+        <arg name="wheel_odom_topic" value="/odom"/>
+        <arg name="set_pose_topic" value="/initialpose"/>
+    </include>
+
+    <node name="rviz" pkg="rviz" type="rviz" clear_params="true" args="-d $(arg rviz_config)"/>
+</launch>

@@ -8,8 +8,6 @@
  ***********************************************************/
 
 #include <dlo/odom.h>
-#include <tf/transform_listener.h>
-#include <geometry_msgs/PoseArray.h>
 
 namespace dlo
 {
@@ -31,6 +29,10 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
     this->keyframe_pub = this->nh.advertise<sensor_msgs::PointCloud2>("keyframe", 1, true);
     this->submap_pub = this->nh.advertise<sensor_msgs::PointCloud2>("submap", 1, true);
     this->map_pub = this->nh.advertise<sensor_msgs::PointCloud2>("map", 1, true);
+
+    // Initialize set pose subscriber
+    this->set_pose_sub =
+        this->nh.subscribe<geometry_msgs::PoseWithCovarianceStamped>("set_pose", 1U, &OdomNode::setPoseCB, this, ros::TransportHints().tcpNoDelay());
 
     // Initialize ROS services
     this->reset_service = this->nh.advertiseService("/localization/reset", &OdomNode::resetCallback, this);
@@ -85,9 +87,7 @@ void OdomNode::getParams()
     ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcv", this->submap_params.submap_kcv_, 10);
     ros::param::param<int>("~dlo/odomNode/submap/keyframe/kcc", this->submap_params.submap_kcc_, 10);
 
-    // Initial Position
-    ros::param::param<bool>("~dlo/odomNode/initialPose/use", this->initial_pose_use_, false);
-
+    // Initial Pose
     double px, py, pz, qx, qy, qz, qw;
     ros::param::param<double>("~dlo/odomNode/initialPose/position/x", px, 0.0);
     ros::param::param<double>("~dlo/odomNode/initialPose/position/y", py, 0.0);
@@ -98,6 +98,10 @@ void OdomNode::getParams()
     ros::param::param<double>("~dlo/odomNode/initialPose/orientation/z", qz, 0.0);
     this->initial_position_ = Eigen::Vector3f(px, py, pz);
     this->initial_orientation_ = Eigen::Quaternionf(qw, qx, qy, qz);
+
+    // Initialization validation thresholds
+    ros::param::param<float>("~dlo/odomNode/max_initialization_distance_threshold_m", this->max_initialization_distance_threshold_m_, 5.0);
+    ros::param::param<float>("~dlo/odomNode/max_initialization_angle_threshold_rad", this->max_initialization_angle_threshold_rad_, 10.0 * M_PI / 180.0);
 
     // Crop Box Filter
     ros::param::param<bool>("~dlo/odomNode/preprocessing/cropBoxFilter/use", this->crop_use_, false);
@@ -160,8 +164,8 @@ void OdomNode::getParams()
 
     tf::transformTFToEigen(transform, baselink_tf_lidar_);
 
-    std::cout << "baselink_tf_lidar: [(" << baselink_tf_lidar_.translation().transpose() << "), ("
-              << baselink_tf_lidar_.rotation().eulerAngles(0, 1, 2).transpose() << ")]\n";
+    std::cout << "[OdomNode::getParams]: [" << this->baselink_frame << "] to [" << this->lidar_frame << "] transform: [position ("
+              << baselink_tf_lidar_.translation().transpose() << "), orientation (" << baselink_tf_lidar_.rotation().eulerAngles(0, 1, 2).transpose() << ")]\n";
 }
 
 void OdomNode::init()
@@ -292,24 +296,25 @@ bool OdomNode::loadMap(const std::string& mapname)
     std::string map_path = this->map_directory + "/" + mapname;
     if (boost::filesystem::exists(map_path) && boost::filesystem::is_directory(map_path))
     {
-        this->map_name = mapname;
         KeyframeMap<int> frames = loadMapFramesFromDisk(map_path);
-
         if (frames.empty())
         {
-            std::cout << "[OdomNode::loadMap]: Requested map loaded is empty. Failed to load a usable map\n";
+            std::cout << "[OdomNode::loadMap]: Requested map [" << mapname << "] is empty. Failed to load a usable map\n";
             return false;
         }
 
+        this->map_name = mapname;
         this->keyframes.reset();
         this->keyframes = std::make_shared<Frames>(this->submap_params, frames);
+        this->keyframes->setCvHullAlpha(this->keyframe_thresh_dist_);
+
         this->publishAllKeyframes();
 
-        std::cout << "[OdomNode::loadMap]: Loaded map [" << map_path << "]\n";
+        std::cout << "[OdomNode::loadMap]: Loaded map [" << mapname << "]\n";
         return true;
     }
 
-    std::cout << "[OdomNode::loadMap]: Requested map [" << map_path << "] not found. Failed to load map\n";
+    std::cout << "[OdomNode::loadMap]: Requested map [" << mapname << "] not found. Failed to load map\n";
     return false;
 }
 
@@ -440,6 +445,20 @@ void OdomNode::publishToROS()
 {
     this->publishPose();
     this->publishTransform();
+}
+
+void OdomNode::setPoseCB(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg)
+{
+    std::cout << "[OdomNode::setPoseCB]: Received request to set robot pose\n" << msg->pose.pose << "\n";
+
+    // Set initial pose to requested pose
+    this->initial_position_ = Eigen::Vector3f(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
+    this->initial_orientation_ =
+        Eigen::Quaternionf(msg->pose.pose.orientation.w, msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
+
+    std::cout << "[OdomNode::setPoseCB]: Initial pose set. Resetting DLO...\n";
+
+    this->dlo_initialized = false;
 }
 
 /**
@@ -729,27 +748,23 @@ void OdomNode::gravityAlign()
     Eigen::Quaternionf grav_q = Eigen::Quaternionf::FromTwoVectors(lin_accel, grav);
 
     // normalize
-    double grav_norm = sqrt(grav_q.w() * grav_q.w() + grav_q.x() * grav_q.x() + grav_q.y() * grav_q.y() + grav_q.z() * grav_q.z());
-    grav_q.w() /= grav_norm;
-    grav_q.x() /= grav_norm;
-    grav_q.y() /= grav_norm;
-    grav_q.z() /= grav_norm;
-
-    // set gravity aligned orientation
-    this->rotq = grav_q;
-    this->T.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
-    this->T_s2s.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
-    this->T_s2s_prev.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+    grav_q.normalize();
 
     // rpy
-    auto euler = grav_q.toRotationMatrix().eulerAngles(2, 1, 0);
-    double yaw = euler[0] * (180.0 / M_PI);
-    double pitch = euler[1] * (180.0 / M_PI);
-    double roll = euler[2] * (180.0 / M_PI);
+    Eigen::Vector3f euler = grav_q.toRotationMatrix().eulerAngles(2, 1, 0);
+    float pitch = euler[1] * (180.0 / M_PI);
+    float roll = euler[2] * (180.0 / M_PI);
+    float yaw = this->rotq.toRotationMatrix().eulerAngles(2, 1, 0)[0];
 
     std::cout << "done" << std::endl;
     std::cout << "  Roll [deg]: " << roll << std::endl;
     std::cout << "  Pitch [deg]: " << pitch << std::endl << std::endl;
+
+    // set gravity aligned roll/pitch
+    this->rotq = grav_q;
+    this->T.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+    this->T_s2s.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+    this->T_s2s_prev.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
 }
 
 /**
@@ -765,51 +780,60 @@ void OdomNode::initializeDLO()
     }
 
     // Gravity Align
-    if (this->gravity_align_ && this->imu_use_ && this->imu_calibrated && !this->initial_pose_use_)
+    if (this->gravity_align_ && this->imu_use_ && this->imu_calibrated)
     {
         std::cout << "Aligning to gravity... ";
         std::cout.flush();
         this->gravityAlign();
     }
 
-    // Use initial known pose
-    if (this->initial_pose_use_)
+    std::cout.flush();
+
+    // set known position
+    this->pose = this->initial_position_;
+    this->T.block(0, 3, 3, 1) = this->pose;
+    this->T_s2s.block(0, 3, 3, 1) = this->pose;
+    this->T_s2s_prev.block(0, 3, 3, 1) = this->pose;
+
+    // set known orientation
+    this->rotq = this->initial_orientation_;
+    this->T.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+    this->T_s2s.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+    this->T_s2s_prev.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+
+    if (this->keyframes->size() > 0)
     {
-        std::cout << "Setting known initial pose... ";
-        std::cout.flush();
+        std::cout << "[OdomNode::initializeDLO]: Aligning scan to map and initializing robot pose...\n";
 
-        // set known position
-        this->pose = this->initial_position_;
-        this->T.block(0, 3, 3, 1) = this->pose;
-        this->T_s2s.block(0, 3, 3, 1) = this->pose;
-        this->T_s2s_prev.block(0, 3, 3, 1) = this->pose;
+        // Validate initial pose against map data
+        OptionalValue<Eigen::Isometry3f> corrected_initial_pose = this->validatePose(Eigen::Isometry3f(this->T), *this->current_scan);
 
-        // set known orientation
-        this->rotq = this->initial_orientation_;
-        this->T.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
-        this->T_s2s.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
-        this->T_s2s_prev.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+        if (corrected_initial_pose)
+        {
+            this->pose = corrected_initial_pose().translation();
+            this->rotq = Eigen::Quaternionf(corrected_initial_pose().rotation());
 
-        std::cout << "done" << std::endl << std::endl;
-    }
-    else
-    {
-        std::cout << "Setting identity initial pose... ";
-        std::cout.flush();
+            // Set position
+            this->initial_position_ = this->pose;
+            this->T.block(0, 3, 3, 1) = this->pose;
+            this->T_s2s.block(0, 3, 3, 1) = this->pose;
+            this->T_s2s_prev.block(0, 3, 3, 1) = this->pose;
 
-        // set known position
-        this->pose.setZero();
-        this->T.block(0, 3, 3, 1) = this->pose;
-        this->T_s2s.block(0, 3, 3, 1) = this->pose;
-        this->T_s2s_prev.block(0, 3, 3, 1) = this->pose;
+            // Set orientation
+            this->initial_orientation_ = this->rotq;
+            this->T.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+            this->T_s2s.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
+            this->T_s2s_prev.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
 
-        // set known orientation
-        this->rotq.setIdentity();
-        this->T.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
-        this->T_s2s.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
-        this->T_s2s_prev.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
-
-        std::cout << "done" << std::endl << std::endl;
+            std::cout << "[OdomNode::initializeDLO]: Set initial pose in current map [" << this->map_name << "] with position [" << this->pose.transpose()
+                      << "] and orientation [" << this->rotq.coeffs().transpose() << "]\n";
+        }
+        else
+        {
+            std::cout << "[OdomNode::initializeDLO]: Could not validate initial pose in current map [" << this->map_name
+                      << "]. Initialization failed. Will attempt again...\n";
+            return;
+        }
     }
 
     if (this->trajectory_optimization_use_)
@@ -853,15 +877,15 @@ void OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc)
     // Unrotate point cloud to align with base-link
     pcl::transformPointCloud(*(this->current_scan), *(this->current_scan), baselink_tf_lidar_.matrix());
 
+    // Preprocess points
+    this->preprocessPoints();
+
     // DLO Initialization procedures (IMU calib, gravity align)
     if (!this->dlo_initialized)
     {
         this->initializeDLO();
         return;
     }
-
-    // Preprocess points
-    this->preprocessPoints();
 
     // Compute Metrics
     this->metrics_thread = std::thread(&OdomNode::computeMetrics, this);
@@ -1149,6 +1173,78 @@ void OdomNode::getNextPose()
 
     // Set next target cloud as current source cloud
     *this->target_cloud = *this->source_cloud;
+}
+
+OptionalValue<Eigen::Isometry3f> OdomNode::validatePose(const Eigen::Isometry3f& pose_guess, const pcl::PointCloud<PointType>& scan)
+{
+    std::cout << "[OdomNode::validatePose]: Seed position [" << pose_guess.translation().transpose() << "]\n";
+
+    // Initialize ICP object
+    nano_gicp::NanoGICP<PointType, PointType> icp;
+    icp.setMaxCorrespondenceDistance(2.0 * this->max_initialization_distance_threshold_m_);
+    icp.setMaximumIterations(100);
+    icp.setTransformationEpsilon(1e-6);
+    icp.setEuclideanFitnessEpsilon(1e-6);
+    icp.setRANSACIterations(0);
+
+    // Set current scan as source cloud
+    pcl::PointCloud<PointType>::Ptr current_scan(new pcl::PointCloud<PointType>(scan));
+    pcl::PointCloud<PointType>::Ptr transformed_current_scan(new pcl::PointCloud<PointType>);
+    pcl::transformPointCloud(*current_scan, *transformed_current_scan, pose_guess.matrix());
+    icp.setInputSource(transformed_current_scan);
+
+    // Extract submap near initial guess
+    this->keyframes->buildSubmap(pose_guess.translation());
+    pcl::PointCloud<PointType>::Ptr submap_cloud(new pcl::PointCloud<PointType>);
+    *submap_cloud = *this->keyframes->submapCloud();
+
+    // Set submap cloud as target cloud
+    icp.setInputTarget(submap_cloud);
+
+    // Align scan to map
+    pcl::PointCloud<PointType>::Ptr aligned_scan(new pcl::PointCloud<PointType>);
+    icp.align(*aligned_scan);
+
+    std::cout << "[OdomNode::validatePose]: ICP Fitness Score: [" << icp.getFitnessScore() << "]\n";
+
+    // Check convergence
+    if (!icp.hasConverged())
+    {
+        std::cout << "[OdomNode::validatePose]: ICP has not converged. Cannot validate initial pose\n";
+        return {};
+    }
+
+    // Extract pose correction transform
+    Eigen::Isometry3f pose_correction = Eigen::Isometry3f(icp.getFinalTransformation());
+
+    std::cout << "[OdomNode::validatePose]: Pose correction [" << pose_correction.translation().transpose() << "]\n";
+
+    // Compute pose in map frame
+    Eigen::Isometry3f corrected_pose = pose_guess * pose_correction;
+
+    std::cout << "[OdomNode::validatePose]: Corrected position [" << corrected_pose.translation().transpose() << "]\n";
+
+    // Check if correction is within allowed distance bounds
+    float distance = pose_correction.translation().norm();
+    if (distance > this->max_initialization_distance_threshold_m_)
+    {
+        std::cout << "[OdomNode::validatePose]: Aligned initial point is more than " << this->max_initialization_distance_threshold_m_
+                  << " m threshold from initial guess. Distance: [" << distance << "]\n";
+        return {};
+    }
+
+    // Check if correction is within allowed angle bounds
+    float angle = 2.0 * std::abs(std::acos(Eigen::Quaternionf(pose_correction.rotation()).w()));
+    if (angle > this->max_initialization_angle_threshold_rad_)
+    {
+        std::cout << "[OdomNode::validatePose]: Aligned initial point is more than " << this->max_initialization_angle_threshold_rad_
+                  << " rad threshold from initial guess. Angle: [" << angle << "]\n";
+        return {};
+    }
+
+    std::cout << "[OdomNode::validatePose]: Distance correction [" << distance << "], angle correction [" << angle << "]\n";
+
+    return { corrected_pose };
 }
 
 /**

@@ -10,7 +10,9 @@
 cmake_minimum_required(VERSION 3.10.0)
 project(direct_lidar_odometry)
 
-add_compile_options(-std=c++14)
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_BUILD_TYPE Release)
 
 find_package( PCL REQUIRED )
@@ -116,6 +118,15 @@ target_link_libraries(test_nano_gicp ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${Open
 add_executable(test_transform_point src/test/test_transform_point.cpp)
 add_dependencies(test_transform_point ${catkin_EXPORTED_TARGETS})
 target_link_libraries(test_transform_point ${catkin_LIBRARIES} ${PCL_LIBRARIES})
+
+add_executable(test_quaternion_angles src/test/test_quaternion_angles.cpp)
+add_dependencies(test_quaternion_angles ${catkin_EXPORTED_TARGETS})
+target_link_libraries(test_quaternion_angles ${catkin_LIBRARIES})
+
+include(CTest)
+add_test(NAME nano_gicp COMMAND $<TARGET_FILE:test_nano_gicp>)
+add_test(NAME transform_point COMMAND $<TARGET_FILE:test_transform_point>)
+add_test(NAME quaternion_angles COMMAND $<TARGET_FILE:test_quaternion_angles>)
 
 ## Install
 install(

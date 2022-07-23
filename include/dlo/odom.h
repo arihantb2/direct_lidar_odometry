@@ -7,21 +7,30 @@
  *
  ***********************************************************/
 
+// Project includes
 #include <dlo/dlo.h>
 #include <frames/frames.h>
 #include <frames/map_io.h>
 
+// Internal message types includes
 #include <er_nav_msgs/GetCurrentWaypoint.h>
 #include <er_nav_msgs/GetWaypointById.h>
 #include <er_nav_msgs/SetLocalizationState.h>
 #include <er_file_io_msgs/HandleFile.h>
 
+// ROS message type includes
+#include <geometry_msgs/PoseWithCovarianceStamped.h>
+#include <geometry_msgs/PoseArray.h>
+
+// ROS standard interface includes
+#include <ros/ros.h>
 #include <ros/publisher.h>
 #include <ros/subscriber.h>
 #include <ros/timer.h>
 #include <ros/service.h>
 #include <ros/service_client.h>
 
+// GTSAM includes
 #include <gtsam/nonlinear/ISAM2.h>
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/Values.h>
@@ -29,10 +38,52 @@
 #include <gtsam/slam/PriorFactor.h>
 #include <gtsam/geometry/Pose3.h>
 
+// ROS library includes
+#include <tf/transform_listener.h>
+
+// PCL library includes
+#include <pcl/common/transforms.h>
+
+// c++ standard library includes
 #include <memory>
 
 namespace dlo
 {
+template <typename T>
+class OptionalValue
+{
+public:
+    OptionalValue()
+    {
+        this->value = nullptr;
+    }
+    OptionalValue(T val)
+    {
+        this->value = std::make_unique<T>(val);
+    }
+    operator bool() const
+    {
+        if (this->value)
+        {
+            return true;
+        }
+
+        return false;
+    }
+    T operator()() const
+    {
+        if (this->value)
+        {
+            return *this->value;
+        }
+
+        return T();
+    }
+
+private:
+    std::unique_ptr<T> value;
+};
+
 class OdomNode
 {
 public:
@@ -49,7 +100,7 @@ public:
 
 private:
     void init();
-    bool loadMap(const std::string& map_name);
+    bool loadMap(const std::string& mapname);
 
     void startSubscribers();
     void stopSubscribers();
@@ -61,6 +112,8 @@ private:
     void icpCB(const sensor_msgs::PointCloud2ConstPtr& pc);
     void imuCB(const sensor_msgs::Imu::ConstPtr& imu);
     void odomCB(const nav_msgs::Odometry::ConstPtr& odom);
+
+    void setPoseCB(const geometry_msgs::PoseWithCovarianceStampedConstPtr& pose);
 
     bool saveCallback(er_file_io_msgs::HandleFile::Request& request, er_file_io_msgs::HandleFile::Response& response);
     bool loadCallback(er_file_io_msgs::HandleFile::Request& request, er_file_io_msgs::HandleFile::Response& response);
@@ -85,6 +138,7 @@ private:
     void gravityAlign();
 
     void getNextPose();
+    OptionalValue<Eigen::Isometry3f> validatePose(const Eigen::Isometry3f& pose_guess, const pcl::PointCloud<PointType>& scan);
     void integrateIMU();
     void integrateOdom();
 
@@ -112,6 +166,7 @@ private:
     ros::Subscriber icp_sub;
     ros::Subscriber imu_sub;
     ros::Subscriber odom_sub;
+    ros::Subscriber set_pose_sub;
 
     ros::Publisher lidar_odom_pub;
     ros::Publisher pose_pub;
@@ -272,7 +327,6 @@ private:
     double keyframe_thresh_dist_;
     double keyframe_thresh_rot_;
 
-    bool initial_pose_use_;
     Eigen::Vector3f initial_position_;
     Eigen::Quaternionf initial_orientation_;
 
@@ -295,6 +349,9 @@ private:
     bool imu_use_;
     int imu_calib_time_;
     int imu_buffer_size_;
+
+    float max_initialization_distance_threshold_m_;
+    float max_initialization_angle_threshold_rad_;
 
     bool trajectory_optimization_use_;
 

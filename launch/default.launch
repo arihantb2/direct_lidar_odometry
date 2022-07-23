@@ -9,14 +9,14 @@
 
 <launch>
 
-  <arg name="rviz" default="false"/>
-
   <arg name="pointcloud_topic" default="/velodyne_points"/>
   <arg name="imu_topic" default="/imu/data"/>
   <arg name="wheel_odom_topic" default="/odom"/>
 
+  <arg name="set_pose_topic" default="/initialpose"/>
+
   <!-- DLO Odometry Node -->
-  <node ns="er_slam" name="dlo_sam" pkg="direct_lidar_odometry" type="dlo_odom_node" output="screen" clear_params="true">
+  <node ns="er_slam" name="dlo_sam" pkg="direct_lidar_odometry" type="dlo_odom_node" output="screen" clear_params="true" respawn="true">
 
     <!-- Load parameters -->
     <rosparam file="$(find direct_lidar_odometry)/cfg/dlo.yaml" command="load"/>
@@ -26,6 +26,7 @@
     <remap from="~pointcloud" to="$(arg pointcloud_topic)"/>
     <remap from="~imu" to="$(arg imu_topic)"/>
     <remap from="~wheel_odom" to="$(arg wheel_odom_topic)"/>
+    <remap from="~set_pose" to="$(arg set_pose_topic)"/>
 
     <!-- Publications -->
     <remap from="~odom" to="dlo/odom"/>
