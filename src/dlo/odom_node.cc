@@ -23,10 +23,9 @@ int main(int argc, char** argv)
     sleep(0.5);
 
     dlo::OdomNode node(nh);
-    ros::AsyncSpinner spinner(0);
-    spinner.start();
     node.start();
-    ros::waitForShutdown();
+
+    ros::spin();
 
     return 0;
 }

@@ -41,6 +41,8 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
     // this->get_current_waypoint_service = this->nh.advertiseService("/localization/get_current_waypoint", &OdomNode::getCurrentWaypointCallback, this);
     // this->get_waypoint_by_id_service = this->nh.advertiseService("/localization/get_waypoint_by_id", &OdomNode::getWaypointByIdCallback, this);
 
+    this->imu_calibrated = false;
+
     this->init();
 
     this->loadMap(this->map_name);
@@ -170,32 +172,19 @@ void OdomNode::getParams()
 
 void OdomNode::init()
 {
-    this->stop_publish_thread = false;
-    this->stop_publish_keyframe_thread = false;
-    this->stop_metrics_thread = false;
-    this->stop_debug_thread = false;
-
     this->dlo_initialized = false;
-    this->imu_calibrated = false;
 
     // Initialize class variables
-    this->odom.pose.pose.position.x = 0.;
-    this->odom.pose.pose.position.y = 0.;
-    this->odom.pose.pose.position.z = 0.;
-    this->odom.pose.pose.orientation.w = 1.;
-    this->odom.pose.pose.orientation.x = 0.;
-    this->odom.pose.pose.orientation.y = 0.;
-    this->odom.pose.pose.orientation.z = 0.;
-    this->odom.pose.covariance = { 0. };
-
     this->T = Eigen::Matrix4f::Identity();
     this->T_s2s = Eigen::Matrix4f::Identity();
     this->T_s2s_prev = Eigen::Matrix4f::Identity();
 
     this->pose_s2s = Eigen::Vector3f(0., 0., 0.);
+    this->rotSO3_s2s = Eigen::Matrix3f::Identity();
     this->rotq_s2s = Eigen::Quaternionf(1., 0., 0., 0.);
 
     this->pose = Eigen::Vector3f(0., 0., 0.);
+    this->rotSO3 = Eigen::Matrix3f::Identity();
     this->rotq = Eigen::Quaternionf(1., 0., 0., 0.);
 
     this->gtsam_keyframe_id = 0;
@@ -241,7 +230,6 @@ void OdomNode::init()
 
     this->original_scan = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
     this->current_scan = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-    this->current_scan_t = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
 
     this->keyframe_cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
 
@@ -336,6 +324,8 @@ void OdomNode::stopSubscribers()
     this->odom_sub.shutdown();
 
     this->map_publish_timer.stop();
+
+    ros::getGlobalCallbackQueue()->clear();
 }
 
 /**
@@ -357,31 +347,6 @@ void OdomNode::start()
 void OdomNode::stop()
 {
     ROS_WARN("Stopping DLO Odometry Node");
-
-    this->stop_publish_thread = true;
-    if (this->publish_thread.joinable())
-    {
-        this->publish_thread.join();
-    }
-
-    this->stop_publish_keyframe_thread = true;
-    if (this->publish_keyframe_thread.joinable())
-    {
-        this->publish_keyframe_thread.join();
-    }
-
-    this->stop_metrics_thread = true;
-    if (this->metrics_thread.joinable())
-    {
-        this->metrics_thread.join();
-    }
-
-    this->stop_debug_thread = true;
-    if (this->debug_thread.joinable())
-    {
-        this->debug_thread.join();
-    }
-
     ros::shutdown();
 }
 
@@ -445,6 +410,16 @@ void OdomNode::publishToROS()
 {
     this->publishPose();
     this->publishTransform();
+
+    if (this->keyframes->submapHasChanged() && this->submap_pub.getNumSubscribers() > 0)
+    {
+        sensor_msgs::PointCloud2 cloud_msg;
+        pcl::toROSMsg(*this->keyframes->submapCloud(), cloud_msg);
+        cloud_msg.header.stamp = this->scan_stamp;
+        cloud_msg.header.frame_id = this->map_frame;
+
+        this->submap_pub.publish(cloud_msg);
+    }
 }
 
 void OdomNode::setPoseCB(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg)
@@ -482,43 +457,37 @@ void OdomNode::publishPose()
 
     q_last = this->rotq;
 
-    this->odom.pose.pose.position.x = this->pose[0];
-    this->odom.pose.pose.position.y = this->pose[1];
-    this->odom.pose.pose.position.z = this->pose[2];
+    nav_msgs::Odometry odom_msg;
 
-    this->odom.pose.pose.orientation.w = this->rotq.w();
-    this->odom.pose.pose.orientation.x = this->rotq.x();
-    this->odom.pose.pose.orientation.y = this->rotq.y();
-    this->odom.pose.pose.orientation.z = this->rotq.z();
+    odom_msg.pose.pose.position.x = this->pose[0];
+    odom_msg.pose.pose.position.y = this->pose[1];
+    odom_msg.pose.pose.position.z = this->pose[2];
 
-    this->odom.header.stamp = this->scan_stamp;
-    this->odom.header.frame_id = this->map_frame;
-    this->odom.child_frame_id = this->baselink_frame;
-    this->lidar_odom_pub.publish(this->odom);
+    odom_msg.pose.pose.orientation.w = this->rotq.w();
+    odom_msg.pose.pose.orientation.x = this->rotq.x();
+    odom_msg.pose.pose.orientation.y = this->rotq.y();
+    odom_msg.pose.pose.orientation.z = this->rotq.z();
 
-    this->pose_ros.header.stamp = this->scan_stamp;
-    this->pose_ros.header.frame_id = this->map_frame;
+    odom_msg.header.stamp = this->scan_stamp;
+    odom_msg.header.frame_id = this->map_frame;
+    odom_msg.child_frame_id = this->baselink_frame;
+    this->lidar_odom_pub.publish(odom_msg);
 
-    this->pose_ros.pose.position.x = this->pose[0];
-    this->pose_ros.pose.position.y = this->pose[1];
-    this->pose_ros.pose.position.z = this->pose[2];
+    geometry_msgs::PoseStamped pose_msg;
 
-    this->pose_ros.pose.orientation.w = this->rotq.w();
-    this->pose_ros.pose.orientation.x = this->rotq.x();
-    this->pose_ros.pose.orientation.y = this->rotq.y();
-    this->pose_ros.pose.orientation.z = this->rotq.z();
+    pose_msg.header.stamp = this->scan_stamp;
+    pose_msg.header.frame_id = this->map_frame;
 
-    this->pose_pub.publish(this->pose_ros);
+    pose_msg.pose.position.x = this->pose[0];
+    pose_msg.pose.position.y = this->pose[1];
+    pose_msg.pose.position.z = this->pose[2];
 
-    if (this->keyframes->submapHasChanged() && this->submap_pub.getNumSubscribers() > 0)
-    {
-        sensor_msgs::PointCloud2 cloud_msg;
-        pcl::toROSMsg(*this->keyframes->submapCloud(), cloud_msg);
-        cloud_msg.header.stamp = this->scan_stamp;
-        cloud_msg.header.frame_id = this->map_frame;
+    pose_msg.pose.orientation.w = this->rotq.w();
+    pose_msg.pose.orientation.x = this->rotq.x();
+    pose_msg.pose.orientation.y = this->rotq.y();
+    pose_msg.pose.orientation.z = this->rotq.z();
 
-        this->submap_pub.publish(cloud_msg);
-    }
+    this->pose_pub.publish(pose_msg);
 }
 
 /**
@@ -573,20 +542,22 @@ void OdomNode::publishTransform()
 void OdomNode::publishKeyframe()
 {
     // Publish keyframe pose
-    this->kf.header.stamp = this->scan_stamp;
-    this->kf.header.frame_id = this->map_frame;
-    this->kf.child_frame_id = this->baselink_frame;
+    nav_msgs::Odometry kf_odom;
 
-    this->kf.pose.pose.position.x = this->pose.x();
-    this->kf.pose.pose.position.y = this->pose.y();
-    this->kf.pose.pose.position.z = this->pose.z();
+    kf_odom.header.stamp = this->scan_stamp;
+    kf_odom.header.frame_id = this->map_frame;
+    kf_odom.child_frame_id = this->baselink_frame;
 
-    this->kf.pose.pose.orientation.w = this->rotq.w();
-    this->kf.pose.pose.orientation.x = this->rotq.x();
-    this->kf.pose.pose.orientation.y = this->rotq.y();
-    this->kf.pose.pose.orientation.z = this->rotq.z();
+    kf_odom.pose.pose.position.x = this->pose.x();
+    kf_odom.pose.pose.position.y = this->pose.y();
+    kf_odom.pose.pose.position.z = this->pose.z();
 
-    this->kf_pub.publish(this->kf);
+    kf_odom.pose.pose.orientation.w = this->rotq.w();
+    kf_odom.pose.pose.orientation.x = this->rotq.x();
+    kf_odom.pose.pose.orientation.y = this->rotq.y();
+    kf_odom.pose.pose.orientation.z = this->rotq.z();
+
+    this->kf_pub.publish(kf_odom);
 
     // Publish keyframe scan
     if (!this->keyframe_cloud->points.empty() && this->keyframe_pub.getNumSubscribers() > 0)
@@ -653,12 +624,6 @@ void OdomNode::preprocessPoints()
         this->vf_scan.setInputCloud(this->current_scan);
         this->vf_scan.filter(*this->current_scan);
     }
-}
-
-void OdomNode::setInitialPose(const Eigen::Isometry3f& pose)
-{
-    this->initial_position_ = pose.translation();
-    this->initial_orientation_ = Eigen::Quaternionf(pose.rotation().matrix());
 }
 
 /**
@@ -762,6 +727,7 @@ void OdomNode::gravityAlign()
 
     // set gravity aligned roll/pitch
     this->rotq = grav_q;
+    this->rotSO3 = this->rotq.toRotationMatrix();
     this->T.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
     this->T_s2s.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
     this->T_s2s_prev.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
@@ -797,6 +763,7 @@ void OdomNode::initializeDLO()
 
     // set known orientation
     this->rotq = this->initial_orientation_;
+    this->rotSO3 = this->rotq.toRotationMatrix();
     this->T.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
     this->T_s2s.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
     this->T_s2s_prev.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
@@ -880,48 +847,48 @@ void OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc)
     // Preprocess points
     this->preprocessPoints();
 
-    // DLO Initialization procedures (IMU calib, gravity align)
     if (!this->dlo_initialized)
     {
+        // DLO Initialization procedures (IMU calib, gravity align)
         this->initializeDLO();
-        return;
     }
-
-    // Compute Metrics
-    this->metrics_thread = std::thread(&OdomNode::computeMetrics, this);
-    this->metrics_thread.detach();
-
-    // Set Adaptive Parameters
-    if (this->adaptive_params_use_)
+    else
     {
-        this->setAdaptiveParams();
-    }
+        // Compute Metrics
+        this->computeMetrics();
 
-    // Set initial frame as target
-    if (this->target_cloud == nullptr)
-    {
-        this->initializeInputTarget();
+        // Set Adaptive Parameters
+        if (this->adaptive_params_use_)
+        {
+            this->setAdaptiveParams();
+        }
+
+        // Set initial frame as target
+        if (this->target_cloud == nullptr)
+        {
+            this->initializeInputTarget();
+            this->updateKeyframes();
+            return;
+        }
+
+        // Set source frame
+        this->source_cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+        this->source_cloud = this->current_scan;
+
+        // Set new frame as input source for both gicp objects
+        this->setInputSources();
+
+        // Get the next pose via IMU + S2S + S2M
+        this->getNextPose();
+
+        // Update current keyframe poses and map
         this->updateKeyframes();
-        return;
-    }
 
-    // Set source frame
-    this->source_cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-    this->source_cloud = this->current_scan;
-
-    // Set new frame as input source for both gicp objects
-    this->setInputSources();
-
-    // Get the next pose via IMU + S2S + S2M
-    this->getNextPose();
-
-    // Update current keyframe poses and map
-    this->updateKeyframes();
-
-    if (this->trajectory_optimization_use_)
-    {
-        // Optimize trajectory
-        this->optimizeTrajectory();
+        if (this->trajectory_optimization_use_)
+        {
+            // Optimize trajectory
+            this->optimizeTrajectory();
+        }
     }
 
     // Update next time stamp
@@ -931,12 +898,7 @@ void OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc)
     this->comp_times.push_back(ros::Time::now().toSec() - then);
 
     // Publish stuff to ROS
-    this->publish_thread = std::thread(&OdomNode::publishToROS, this);
-    this->publish_thread.detach();
-
-    // Debug statements and publish custom DLO message
-    this->debug_thread = std::thread(&OdomNode::debug, this);
-    this->debug_thread.detach();
+    this->publishToROS();
 }
 
 void OdomNode::optimizeTrajectory()
@@ -1180,8 +1142,8 @@ OptionalValue<Eigen::Isometry3f> OdomNode::validatePose(const Eigen::Isometry3f&
     std::cout << "[OdomNode::validatePose]: Seed position [" << pose_guess.translation().transpose() << "]\n";
 
     // Initialize ICP object
-    nano_gicp::NanoGICP<PointType, PointType> icp;
-    icp.setMaxCorrespondenceDistance(2.0 * this->max_initialization_distance_threshold_m_);
+    pcl::IterativeClosestPoint<PointType, PointType> icp;
+    icp.setMaxCorrespondenceDistance(40.0);
     icp.setMaximumIterations(100);
     icp.setTransformationEpsilon(1e-6);
     icp.setEuclideanFitnessEpsilon(1e-6);
@@ -1256,7 +1218,6 @@ void OdomNode::integrateOdom()
     // Extract odom data between the two frames
     std::vector<OdomMeas> odom_frames;
 
-    this->mtx_odom.lock();
     for (const auto& o : this->odom_buffer)
     {
         // Odom data between two frames is when:
@@ -1270,7 +1231,6 @@ void OdomNode::integrateOdom()
             odom_frames.push_back(o);
         }
     }
-    this->mtx_odom.unlock();
 
     // Sort measurements by time
     std::sort(odom_frames.begin(), odom_frames.end(), this->comparatorMeas);
@@ -1401,15 +1361,7 @@ void OdomNode::propagateS2S(Eigen::Matrix4f T)
     this->rotSO3_s2s << this->T_s2s(0, 0), this->T_s2s(0, 1), this->T_s2s(0, 2), this->T_s2s(1, 0), this->T_s2s(1, 1), this->T_s2s(1, 2), this->T_s2s(2, 0),
         this->T_s2s(2, 1), this->T_s2s(2, 2);
 
-    Eigen::Quaternionf q(this->rotSO3_s2s);
-
-    // Normalize quaternion
-    double norm = sqrt(q.w() * q.w() + q.x() * q.x() + q.y() * q.y() + q.z() * q.z());
-    q.w() /= norm;
-    q.x() /= norm;
-    q.y() /= norm;
-    q.z() /= norm;
-    this->rotq_s2s = q;
+    this->rotq_s2s = Eigen::Quaternionf(this->rotSO3_s2s).normalized();
 }
 
 /**
@@ -1420,26 +1372,7 @@ void OdomNode::propagateS2M()
 {
     this->pose << this->T(0, 3), this->T(1, 3), this->T(2, 3);
     this->rotSO3 << this->T(0, 0), this->T(0, 1), this->T(0, 2), this->T(1, 0), this->T(1, 1), this->T(1, 2), this->T(2, 0), this->T(2, 1), this->T(2, 2);
-
-    Eigen::Quaternionf q(this->rotSO3);
-
-    // Normalize quaternion
-    double norm = sqrt(q.w() * q.w() + q.x() * q.x() + q.y() * q.y() + q.z() * q.z());
-    q.w() /= norm;
-    q.x() /= norm;
-    q.y() /= norm;
-    q.z() /= norm;
-    this->rotq = q;
-}
-
-/**
- * Transform Current Scan
- **/
-
-void OdomNode::transformCurrentScan()
-{
-    this->current_scan_t = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
-    pcl::transformPointCloud(*this->current_scan, *this->current_scan_t, this->T);
+    this->rotq = Eigen::Quaternionf(this->rotSO3).normalized();
 }
 
 /**
@@ -1483,9 +1416,6 @@ void OdomNode::computeSpaciousness()
 
 void OdomNode::updateKeyframes()
 {
-    // transform point cloud
-    this->transformCurrentScan();
-
     // calculate difference in pose and rotation to all poses in trajectory
     float closest_d = std::numeric_limits<float>::infinity();
     int closest_idx = 0;
@@ -1548,23 +1478,25 @@ void OdomNode::updateKeyframes()
         // voxelization for submap
         if (this->vf_submap_use_)
         {
-            this->vf_submap.setInputCloud(this->current_scan_t);
-            this->vf_submap.filter(*this->current_scan_t);
+            this->vf_submap.setInputCloud(this->current_scan);
+            this->vf_submap.filter(*this->current_scan);
         }
 
-        // compute kdtree and keyframe normals (use gicp_s2s input source as temporary storage because it will be overwritten by setInputSources())
-        *this->keyframe_cloud = *this->current_scan_t;
-
-        this->gicp_s2s.setInputSource(this->keyframe_cloud);
+        this->gicp_s2s.setInputSource(this->current_scan);
         this->gicp_s2s.calculateSourceCovariances();
 
-        // update keyframe map
         Keyframe<int> kf(this->keyframes->size(), this->scan_stamp.toSec());
         kf.pose = Eigen::Isometry3f(this->T);
-        kf.cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>);
+        kf.cloud = pcl::PointCloud<PointType>::Ptr(new pcl::PointCloud<PointType>(*this->current_scan));
         kf.normals = this->gicp_s2s.getSourceCovariances();
-        *(kf.cloud) = *(this->current_scan);
-        this->keyframes->addFrame(kf);
+
+        // update keyframe map
+        if (!this->keyframes->addFrame(kf))
+        {
+            std::cout << "[OdomNode::updateKeyframes]: Could not add keyframe with id [" << kf.id << "]\n";
+        }
+
+        *this->keyframe_cloud = *kf.getTransformedCloud();
 
         if (this->trajectory_optimization_use_)
         {
@@ -1572,8 +1504,7 @@ void OdomNode::updateKeyframes()
             this->gtsam_kf_id_map.insert({ this->gtsam_keyframe_id, kf.id });
         }
 
-        this->publish_keyframe_thread = std::thread(&OdomNode::publishKeyframe, this);
-        this->publish_keyframe_thread.detach();
+        this->publishKeyframe();
     }
 }
 
@@ -1663,6 +1594,9 @@ bool OdomNode::resetCallback(er_nav_msgs::SetLocalizationState::Request& request
         std::cout << "[OdomNode::resetCallback]: Stopping subscribers to sensor data ...\n";
         this->stopSubscribers();
 
+        // Reset map name
+        this->map_name.clear();
+
         // Reset and init class variables
         // NOTE: This resets the current pose to origin and clears the keyframes
         this->init();
@@ -1692,39 +1626,5 @@ bool OdomNode::getCurrentWaypointCallback(er_nav_msgs::GetCurrentWaypoint::Reque
 bool OdomNode::getWaypointByIdCallback(er_nav_msgs::GetWaypointById::Request& request, er_nav_msgs::GetWaypointById::Response& response)
 {
     return true;
-}
-
-/**
- * Debug Statements
- **/
-
-void OdomNode::debug()
-{
-    // Total length traversed
-    double length_traversed = 0.;
-    Eigen::Vector3f p_curr = Eigen::Vector3f(0., 0., 0.);
-    Eigen::Vector3f p_prev = Eigen::Vector3f(0., 0., 0.);
-    for (const auto& t : this->trajectory)
-    {
-        if (p_prev == Eigen::Vector3f(0., 0., 0.))
-        {
-            p_prev = t.translation();
-            continue;
-        }
-        p_curr = t.translation();
-        double l = (p_curr - p_prev).norm();
-
-        if (l >= 0.05)
-        {
-            length_traversed += l;
-            p_prev = p_curr;
-        }
-    }
-
-    // if (length_traversed == 0)
-    // {
-    //     this->publish_keyframe_thread = std::thread(&OdomNode::publishKeyframe, this);
-    //     this->publish_keyframe_thread.detach();
-    // }
 }
 }  // namespace dlo

@@ -42,6 +42,7 @@
 #include <tf/transform_listener.h>
 
 // PCL library includes
+#include <pcl/registration/icp.h>
 #include <pcl/common/transforms.h>
 
 // c++ standard library includes
@@ -105,8 +106,6 @@ private:
     void startSubscribers();
     void stopSubscribers();
 
-    void setInitialPose(const Eigen::Isometry3f& pose);
-
     void abortTimerCB(const ros::TimerEvent& e);
     void mapPublishTimerCB(const ros::TimerEvent& e);
     void icpCB(const sensor_msgs::PointCloud2ConstPtr& pc);
@@ -150,12 +149,9 @@ private:
     void computeMetrics();
     void computeSpaciousness();
 
-    void transformCurrentScan();
     void updateKeyframes();
 
     void optimizeTrajectory();
-
-    void debug();
 
     double first_imu_time;
 
@@ -209,7 +205,6 @@ private:
 
     pcl::PointCloud<PointType>::Ptr original_scan;
     pcl::PointCloud<PointType>::Ptr current_scan;
-    pcl::PointCloud<PointType>::Ptr current_scan_t;
 
     pcl::PointCloud<PointType>::Ptr keyframe_cloud;
     int num_keyframes;
@@ -229,11 +224,6 @@ private:
     pcl::CropBox<PointType> crop;
     pcl::VoxelGrid<PointType> vf_scan;
     pcl::VoxelGrid<PointType> vf_submap;
-
-    nav_msgs::Odometry odom;
-    nav_msgs::Odometry kf;
-
-    geometry_msgs::PoseStamped pose_ros;
 
     Eigen::Matrix4f T;
     Eigen::Matrix4f T_s2s, T_s2s_prev;
@@ -301,23 +291,9 @@ private:
     Metrics metrics;
 
     static std::atomic<bool> abort_;
-    std::atomic<bool> stop_publish_thread;
-    std::atomic<bool> stop_publish_keyframe_thread;
-    std::atomic<bool> stop_metrics_thread;
-    std::atomic<bool> stop_debug_thread;
-
-    std::thread publish_thread;
-    std::thread publish_keyframe_thread;
-    std::thread metrics_thread;
-    std::thread debug_thread;
 
     std::mutex mtx_imu;
     std::mutex mtx_odom;
-
-    std::string cpu_type;
-    std::vector<double> cpu_percents;
-    clock_t lastCPU, lastSysCPU, lastUserCPU;
-    int numProcessors;
 
     // Parameters
     std::string version_;
