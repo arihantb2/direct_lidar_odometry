@@ -325,7 +325,11 @@ void OdomNode::stopSubscribers()
 
     this->map_publish_timer.stop();
 
-    ros::getGlobalCallbackQueue()->clear();
+    ros::CallbackQueue* cb_queue = ros::getGlobalCallbackQueue();
+    if (cb_queue)
+    {
+        cb_queue->clear();
+    }
 }
 
 /**
@@ -768,7 +772,7 @@ void OdomNode::initializeDLO()
     this->T_s2s.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
     this->T_s2s_prev.block(0, 0, 3, 3) = this->rotq.toRotationMatrix();
 
-    if (this->keyframes->size() > 0)
+    if (!this->keyframes->empty())
     {
         std::cout << "[OdomNode::initializeDLO]: Aligning scan to map and initializing robot pose...\n";
 

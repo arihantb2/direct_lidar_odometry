@@ -101,11 +101,6 @@ public:
         return this->frames_;
     }
 
-    void setCvHullAlpha(double alpha)
-    {
-        this->concave_hull_.setAlpha(alpha);
-    }
-
     bool submapHasChanged() const
     {
         return this->submap_has_changed_;
@@ -121,9 +116,19 @@ public:
         return this->submap_normals_;
     }
 
-    unsigned int size()
+    unsigned int size() const
     {
         return this->frames_.size();
+    }
+
+    bool empty() const
+    {
+        return this->frames_.empty();
+    }
+
+    void setCvHullAlpha(double alpha)
+    {
+        this->concave_hull_.setAlpha(alpha);
     }
 
     bool setFramePose(const unsigned int idx, const Eigen::Isometry3f& pose);
