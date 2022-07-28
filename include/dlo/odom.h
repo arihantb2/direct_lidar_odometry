@@ -42,7 +42,6 @@
 #include <tf/transform_listener.h>
 
 // PCL library includes
-#include <pcl/registration/icp.h>
 #include <pcl/common/transforms.h>
 
 // c++ standard library includes
@@ -99,9 +98,25 @@ public:
     void start();
     void stop();
 
+    std::string mapName() const
+    {
+        return this->map_name;
+    }
+
+    unsigned int mapSize() const
+    {
+        if (!this->keyframes)
+        {
+            return 0;
+        }
+
+        return this->keyframes->size();
+    }
+
+    bool loadMap(const std::string& mapname);
+
 private:
     void init();
-    bool loadMap(const std::string& mapname);
 
     void startSubscribers();
     void stopSubscribers();
@@ -121,6 +136,15 @@ private:
     bool getWaypointByIdCallback(er_nav_msgs::GetWaypointById::Request& request, er_nav_msgs::GetWaypointById::Response& response);
 
     void getParams();
+
+    template <typename Type>
+    bool paramLoadHelper(std::string ns, Type& param, const Type& def_param);
+    template <typename Type>
+    bool paramLoadHelper(const char* ns, Type& param, const Type& def_param);
+    template <typename Type, size_t Length>
+    bool vectorParamLoadHelper(std::string ns, std::vector<Type>& param, const std::vector<Type>& def_param);
+    template <typename Type, size_t Length>
+    bool vectorParamLoadHelper(const char* ns, std::vector<Type>& param, const std::vector<Type>& def_param);
 
     void publishToROS();
     void publishPose();
@@ -177,7 +201,6 @@ private:
     ros::ServiceServer load_map_service;
     ros::ServiceServer get_current_waypoint_service;
     ros::ServiceServer get_waypoint_by_id_service;
-    ros::ServiceServer reset_service;
 
     Frames::SubmapParams submap_params;
     std::shared_ptr<Frames> keyframes;
@@ -218,6 +241,7 @@ private:
     double prev_frame_stamp;
     std::vector<double> comp_times;
 
+    nano_gicp::NanoGICP<PointType, PointType> gicp_init;
     nano_gicp::NanoGICP<PointType, PointType> gicp_s2s;
     nano_gicp::NanoGICP<PointType, PointType> gicp;
 
@@ -326,8 +350,14 @@ private:
     int imu_calib_time_;
     int imu_buffer_size_;
 
-    float max_initialization_distance_threshold_m_;
-    float max_initialization_angle_threshold_rad_;
+    struct InitializationParams
+    {
+        float max_distance_threshold_m_;
+        float max_angle_threshold_rad_;
+        float max_icp_fitness_score_;
+    };
+
+    InitializationParams init_params;
 
     bool trajectory_optimization_use_;
 

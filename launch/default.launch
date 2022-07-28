@@ -32,6 +32,7 @@
     <remap from="~odom" to="dlo/odom"/>
     <remap from="~pose" to="dlo/pose"/>
     <remap from="~keyframe_odom" to="dlo/keyframe_odom"/>
+    <remap from="~keyframe_array" to="dlo/keyframe_array"/>
     <remap from="~map" to="/cloud_pcd"/>
     <remap from="~submap" to="dlo/submap"/>
     <remap from="~keyframe" to="dlo/keyframe"/>

@@ -14,7 +14,7 @@ dlo:
 
   odom: false
   imu: true
-  gravityAlign: true
+  gravityAlign: false
   trajectoryOptimization: false
 
   mode: 1 # 0: LOCALIZATION, 1: SLAM
@@ -22,10 +22,10 @@ dlo:
   mapDirectory: "/mnt/usb_data/site_data/maps"
 
   odomNode:
-    map_frame: map
-    odom_frame: odom
-    child_frame: base_link
-    lidar_frame: velodyne_frame
+    mapFrame: map
+    odomFrame: odom
+    childFrame: base_link
+    lidarFrame: velodyne_frame
 
   mapNode:
     publishFreq: 3.0
