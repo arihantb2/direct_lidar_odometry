@@ -127,7 +127,7 @@ private:
     void imuCB(const sensor_msgs::Imu::ConstPtr& imu);
     void odomCB(const nav_msgs::Odometry::ConstPtr& odom);
 
-    void setPoseCB(const geometry_msgs::PoseWithCovarianceStampedConstPtr& pose);
+    void setPoseCallback(const geometry_msgs::PoseWithCovarianceStampedConstPtr& pose);
 
     bool saveCallback(er_file_io_msgs::HandleFile::Request& request, er_file_io_msgs::HandleFile::Response& response);
     bool loadCallback(er_file_io_msgs::HandleFile::Request& request, er_file_io_msgs::HandleFile::Response& response);
@@ -382,4 +382,20 @@ private:
     int gicps2m_ransac_iter_;
     double gicps2m_ransac_inlier_thresh_;
 };
+
+static geometry_msgs::Pose toRosMsg(const Eigen::Isometry3f& eigen_pose)
+{
+    geometry_msgs::Pose pose_msg;
+    Eigen::Quaternionf quat(eigen_pose.rotation());
+
+    pose_msg.position.x = eigen_pose.translation().x();
+    pose_msg.position.y = eigen_pose.translation().y();
+    pose_msg.position.z = eigen_pose.translation().z();
+    pose_msg.orientation.w = quat.w();
+    pose_msg.orientation.x = quat.x();
+    pose_msg.orientation.y = quat.y();
+    pose_msg.orientation.z = quat.z();
+
+    return pose_msg;
+}
 }  // namespace dlo

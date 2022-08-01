@@ -16,6 +16,12 @@
 
 #include <frames/point_types.h>
 
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
+#include <boost/lexical_cast.hpp>
+#include <boost/bimap.hpp>
+
 namespace dlo
 {
 using PointCloud = pcl::PointCloud<PointType>;
@@ -29,22 +35,57 @@ struct Keyframe
     {
         this->init();
     }
-
-    Keyframe(T _id) : id{ _id }
+    Keyframe(const T& _id) : id{ _id }
     {
         this->init();
     }
-
-    Keyframe(T _id, double _timestamp) : id{ _id }, timestamp{ _timestamp }
+    Keyframe(const T& _id, const std::string& uuid = "") : id{ _id }
     {
         this->init();
+
+        if (!uuid.empty())
+        {
+            uuid_ = uuid;
+        }
+    }
+    Keyframe(const T& _id, const double _timestamp, const std::string& uuid = "") : id{ _id }
+    {
+        this->init();
+        this->timestamp = _timestamp;
+
+        if (!uuid.empty())
+        {
+            uuid_ = uuid;
+        }
+    }
+    Keyframe(const Keyframe& other)
+    {
+        this->id = other.id;
+        this->uuid_ = other.uuid();
+        this->timestamp = other.timestamp;
+        this->pose = other.pose;
+        this->cloud = PointCloud::Ptr(new PointCloud);
+        if (other.cloud)
+        {
+            *this->cloud = *other.cloud;
+            this->normals = other.normals;
+        }
+    }
+
+    std::string uuid() const
+    {
+        return this->uuid_;
     }
 
     void init()
     {
+        this->timestamp = 0.0;
         this->pose.setIdentity();
         this->cloud.reset();
         this->normals.clear();
+
+        static boost::uuids::random_generator uuid_generator;
+        this->uuid_ = boost::lexical_cast<std::string>(uuid_generator());
     }
 
     PointCloud::Ptr getTransformedCloud() const
@@ -64,6 +105,9 @@ struct Keyframe
     Eigen::Isometry3f pose;
     PointCloud::Ptr cloud;
     FrameNormals normals;
+
+private:
+    std::string uuid_;
 };
 
 template <typename IdType = int>
@@ -83,72 +127,62 @@ public:
     };
 
     Frames(const SubmapParams& params);
+
     Frames(const SubmapParams&, const KeyframeMap<int>& keyframes);
+
     ~Frames();
 
     void init();
 
-    bool addFrame(const Keyframe<int>& frame);
-    void removeFrame(const unsigned int& idx);
+    bool add(const Keyframe<int>& frame);
 
-    KeyframeMap<int> frames() const
-    {
-        return this->frames_;
-    }
+    Keyframe<int> frame(const unsigned int idx) const;
 
-    KeyframeMap<int> operator()() const
-    {
-        return this->frames_;
-    }
+    Keyframe<int> frame(const std::string& uuid) const;
 
-    bool submapHasChanged() const
-    {
-        return this->submap_has_changed_;
-    }
+    KeyframeMap<int> frames() const;
 
-    PointCloud::Ptr submapCloud() const
-    {
-        return this->submap_cloud_;
-    }
+    KeyframeMap<int> operator()() const;
 
-    FrameNormals submapNormals() const
-    {
-        return this->submap_normals_;
-    }
+    unsigned int size() const;
 
-    unsigned int size() const
-    {
-        return this->frames_.size();
-    }
+    bool empty() const;
 
-    bool empty() const
-    {
-        return this->frames_.empty();
-    }
-
-    void setCvHullAlpha(double alpha)
-    {
-        this->concave_hull_.setAlpha(alpha);
-    }
+    void setCvHullAlpha(double alpha);
 
     bool setFramePose(const unsigned int idx, const Eigen::Isometry3f& pose);
 
-    Eigen::Isometry3f getFramePose(const unsigned int idx) const;
-    PointCloud::Ptr getFrameCloud(const unsigned int idx) const;
-    FrameNormals getFrameNormals(const unsigned int idx) const;
+    std::pair<bool, int> getClosestFrameId(Eigen::Vector3f pose);
+
+    std::pair<bool, Keyframe<int>> getClosestFrame(Eigen::Vector3f pose);
 
     void buildMap();
+
     void buildSubmap(Eigen::Vector3f pose);
 
-    PointCloud::Ptr getMap();
-    PointCloud::Ptr getMapDS(const double leaf_size);
+    void resetSubmapStates();
+
+    bool submapHasChanged() const;
+
+    PointCloud::Ptr submapCloud() const;
+
+    PointCloud::Ptr getSubmapCloudOneTime(Eigen::Vector3f pose);
+
+    FrameNormals submapNormals() const;
+
+    PointCloud::Ptr mapCloud();
+
+    PointCloud::Ptr mapCloudDS(const double leaf_size);
 
 private:
     void computeConvexHull();
+
     void computeConcaveHull();
+
     void pushSubmapIndices(std::vector<float> dists, int k, std::vector<int> frame_indices);
 
     KeyframeMap<int> frames_;
+    boost::bimap<int, std::string> id_uuid_map_;
 
     pcl::ConvexHull<PointType> convex_hull_;
     pcl::ConcaveHull<PointType> concave_hull_;

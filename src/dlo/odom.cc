@@ -32,13 +32,13 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
 
     // Initialize set pose subscriber
     this->set_pose_sub =
-        this->nh.subscribe<geometry_msgs::PoseWithCovarianceStamped>("set_pose", 1U, &OdomNode::setPoseCB, this, ros::TransportHints().tcpNoDelay());
+        this->nh.subscribe<geometry_msgs::PoseWithCovarianceStamped>("set_pose", 1U, &OdomNode::setPoseCallback, this, ros::TransportHints().tcpNoDelay());
 
     // Initialize ROS services
     this->save_map_service = this->nh.advertiseService("/localization/save_map", &OdomNode::saveCallback, this);
     // this->load_map_service = this->nh.advertiseService("/localization/load_map", &OdomNode::loadCallback, this);
-    // this->get_current_waypoint_service = this->nh.advertiseService("/localization/get_current_waypoint", &OdomNode::getCurrentWaypointCallback, this);
-    // this->get_waypoint_by_id_service = this->nh.advertiseService("/localization/get_waypoint_by_id", &OdomNode::getWaypointByIdCallback, this);
+    this->get_current_waypoint_service = this->nh.advertiseService("/localization/get_current_waypoint", &OdomNode::getCurrentWaypointCallback, this);
+    this->get_waypoint_by_id_service = this->nh.advertiseService("/localization/get_waypoint_by_id", &OdomNode::getWaypointByIdCallback, this);
 
     this->imu_calibrated = false;
 
@@ -51,6 +51,19 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
 
 OdomNode::~OdomNode()
 {
+    this->lidar_odom_pub.shutdown();
+    this->pose_pub.shutdown();
+    this->kf_pub.shutdown();
+    this->kf_array_pub.shutdown();
+    this->keyframe_pub.shutdown();
+    this->submap_pub.shutdown();
+    this->map_pub.shutdown();
+
+    this->set_pose_sub.shutdown();
+
+    this->save_map_service.shutdown();
+    this->get_current_waypoint_service.shutdown();
+    this->get_waypoint_by_id_service.shutdown();
 }
 
 /**
@@ -398,7 +411,7 @@ void OdomNode::publishMap()
         return;
     }
 
-    pcl::PointCloud<PointType>::Ptr map_cloud = this->keyframes->getMapDS(this->map_vf_leaf_size_);
+    pcl::PointCloud<PointType>::Ptr map_cloud = this->keyframes->mapCloudDS(this->map_vf_leaf_size_);
 
     if (map_cloud == nullptr)
     {
@@ -437,9 +450,9 @@ void OdomNode::publishToROS()
     }
 }
 
-void OdomNode::setPoseCB(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg)
+void OdomNode::setPoseCallback(const geometry_msgs::PoseWithCovarianceStamped::ConstPtr& msg)
 {
-    std::cout << "[dlo::OdomNode::setPoseCB]: Received request to set robot pose\n" << msg->pose.pose << "\n";
+    std::cout << "[dlo::OdomNode::setPoseCallback]: Received request to set robot pose\n" << msg->pose.pose << "\n";
 
     // Set initial pose to requested pose
     this->initial_position_ = Eigen::Vector3f(msg->pose.pose.position.x, msg->pose.pose.position.y, msg->pose.pose.position.z);
@@ -853,6 +866,9 @@ void OdomNode::icpCB(const sensor_msgs::PointCloud2ConstPtr& pc)
     {
         // DLO Initialization procedures (IMU calib, gravity align)
         this->initializeDLO();
+
+        // Reset submap states
+        this->keyframes->resetSubmapStates();
     }
     else
     {
@@ -1445,7 +1461,7 @@ void OdomNode::updateKeyframes()
     else
     {
         // get closest pose and corresponding rotation
-        Eigen::Quaternionf closest_pose_r(this->keyframes->getFramePose(closest_idx).rotation());
+        Eigen::Quaternionf closest_pose_r(this->keyframes->frame(closest_idx).pose.rotation());
 
         // calculate difference in orientation
         Eigen::Quaternionf dq = this->rotq * (closest_pose_r.inverse());
@@ -1487,7 +1503,7 @@ void OdomNode::updateKeyframes()
         std::cout << "[dlo::OdomNode::updateKeyframes]: Adding new keyframe at pose [" << kf.pose.translation().transpose() << "]\n";
 
         // update keyframe map
-        if (!this->keyframes->addFrame(kf))
+        if (!this->keyframes->add(kf))
         {
             std::cout << "[dlo::OdomNode::updateKeyframes]: Could not add keyframe with id [" << kf.id << "]\n";
         }
@@ -1616,11 +1632,51 @@ bool OdomNode::resetCallback(er_nav_msgs::SetLocalizationState::Request& request
 
 bool OdomNode::getCurrentWaypointCallback(er_nav_msgs::GetCurrentWaypoint::Request& request, er_nav_msgs::GetCurrentWaypoint::Response& response)
 {
+    if (!dlo_initialized)
+    {
+        ROS_ERROR_STREAM("[dlo::OdomNode::getCurrentWaypointCallback]: Failed to get current waypoint");
+        return false;
+    }
+
+    if (this->keyframes->empty())
+    {
+        ROS_ERROR_STREAM("[dlo::OdomNode::getCurrentWaypointCallback]: Failed to get current waypoint");
+        return false;
+    }
+
+    std::pair<bool, Keyframe<int>> frame_result = this->keyframes->getClosestFrame(this->pose);
+
+    if (!frame_result.first)
+    {
+        ROS_ERROR_STREAM("[dlo::OdomNode::getCurrentWaypointCallback]: Failed to get current waypoint");
+        return false;
+    }
+
+    response.waypoint_id = frame_result.second.id;
+    response.waypoint_frame = frame_result.second.uuid();
+    response.waypoint_pose.header.stamp = ros::Time(frame_result.second.timestamp);
+    response.waypoint_pose.header.frame_id = this->map_frame;
+    response.waypoint_pose.pose = toRosMsg(frame_result.second.pose);
+
     return true;
 }
 
 bool OdomNode::getWaypointByIdCallback(er_nav_msgs::GetWaypointById::Request& request, er_nav_msgs::GetWaypointById::Response& response)
 {
+    Keyframe<int> frame = this->keyframes->frame(request.waypoint_frame);
+
+    if (frame.uuid() != request.waypoint_frame)
+    {
+        ROS_ERROR_STREAM("[dlo::OdomNode::getWaypointByIdCallback]: Failed to get waypoint with id: [" << request.waypoint_frame << "]");
+        response.available = false;
+        return true;
+    }
+
+    response.available = true;
+    response.waypoint_pose.header.stamp = ros::Time(frame.timestamp);
+    response.waypoint_pose.header.frame_id = this->map_frame;
+    response.waypoint_pose.pose = toRosMsg(frame.pose);
+
     return true;
 }
 

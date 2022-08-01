@@ -20,27 +20,29 @@ bool resetCallback(er_nav_msgs::SetLocalizationState::Request& request, er_nav_m
 {
     if (!odom_node_ptr)
     {
-        std::cout << "[OdomNode::resetCallback]: Odom Node not running... Cannot reset\n";
+        std::cout << "[dlo::OdomNode::resetCallback]: Odom Node not running... Cannot reset\n";
     }
 
-    std::cout << "[OdomNode::resetCallback]: Requested new map [" << request.file_tag << "], will overwrite current map [" << odom_node_ptr->mapName() << "]\n";
+    std::cout << "[dlo::OdomNode::resetCallback]: Requested new map [" << request.file_tag << "], will overwrite current map [" << odom_node_ptr->mapName()
+              << "] with [" << odom_node_ptr->mapSize() << "] frames\n";
 
     // Stop odom node
     odom_node_ptr->stop();
 
     // Delete odom node and create new object
-    odom_node_ptr.reset(new dlo::OdomNode(ros::NodeHandle("~")));
+    odom_node_ptr.reset();
+    odom_node_ptr = std::make_unique<dlo::OdomNode>(ros::NodeHandle("~"));
 
     if (!request.file_tag.empty())
     {
         // Load new map
         if (odom_node_ptr->loadMap(request.file_tag))
         {
-            std::cout << "[OdomNode::resetCallback]: Loaded new map [" << request.file_tag << "]\n";
+            std::cout << "[dlo::OdomNode::resetCallback]: Loaded new map [" << request.file_tag << "]\n";
         }
         else
         {
-            std::cout << "[OdomNode::resetCallback]: Reset map\n";
+            std::cout << "[dlo::OdomNode::resetCallback]: Could not load map [" << request.file_tag << "]. Reset map\n";
         }
     }
 
@@ -59,10 +61,10 @@ int main(int argc, char** argv)
     signal(SIGTERM, controlC);
     sleep(0.5);
 
-    ros::ServiceServer reset_odom_server = nh.advertiseService("/localization/reset", &resetCallback);
-
     odom_node_ptr = std::make_unique<dlo::OdomNode>(nh);
     odom_node_ptr->start();
+
+    ros::ServiceServer reset_odom_server = nh.advertiseService("/localization/reset", &resetCallback);
 
     ros::spin();
 

@@ -78,7 +78,7 @@ static void saveMapFramesToDisk(const KeyframeMap<int>& frames, const std::strin
 {
     std::cout << "****************************************************[saveMapFramesToDisk]****************************************************\n";
 
-    std::string suffix = "";
+    std::string dir_path_resolved = dir_path;
     if (!boost::filesystem::exists(dir_path))
     {
         std::cout << "Creating directory [" << dir_path << "]\n";
@@ -86,16 +86,18 @@ static void saveMapFramesToDisk(const KeyframeMap<int>& frames, const std::strin
     else
     {
         double now = std::chrono::high_resolution_clock::now().time_since_epoch().count() / 1e9;
-        suffix += "." + std::to_string(now);
+        dir_path_resolved += "." + std::to_string(now);
     }
 
-    boost::filesystem::create_directory(dir_path + suffix);
+    boost::filesystem::create_directory(dir_path_resolved);
 
-    std::cout << "[saveMapFramesToDisk]: Saving map files to [" << dir_path + suffix << "] ...\n";
+    std::cout << "[saveMapFramesToDisk]: Saving map files to [" << dir_path_resolved << "] ...\n";
 
     PointCloud::Ptr frame_positions(new PointCloud);
     PoseCloud::Ptr frame_poses(new PoseCloud);
     PointCloud::Ptr global_map(new PointCloud);
+
+    boost::bimap<int, std::string> frame_uuids;
 
     // utility::progbar bar(std::cout, 80, '=', ' ');
     for (auto kf_pair : frames)
@@ -103,7 +105,7 @@ static void saveMapFramesToDisk(const KeyframeMap<int>& frames, const std::strin
         std::ostringstream padded_index;
         padded_index << std::internal << std::setfill('0') << std::setw(k_file_index_chars) << std::to_string(kf_pair.first);
 
-        pcl::io::savePCDFileBinary(dir_path + suffix + "/" + padded_index.str() + "-key_frame_points.pcd", *kf_pair.second.cloud);
+        pcl::io::savePCDFileBinary(dir_path_resolved + "/" + padded_index.str() + "-key_frame_points.pcd", *kf_pair.second.cloud);
 
         PoseType pcl_pose = toPclPose(kf_pair.second.pose);
         pcl_pose.time = kf_pair.second.timestamp;
@@ -113,14 +115,22 @@ static void saveMapFramesToDisk(const KeyframeMap<int>& frames, const std::strin
 
         *global_map += *kf_pair.second.getTransformedCloud();
 
+        frame_uuids.insert({ kf_pair.second.id, kf_pair.second.uuid() });
+
         // bar.update(kf_pair.first + 1, frames.size());
     }
 
-    pcl::io::savePCDFileASCII(dir_path + suffix + "/key_frames_positions.pcd", *frame_positions);
-    pcl::io::savePCDFileASCII(dir_path + suffix + "/key_frames_poses.pcd", *frame_poses);
-    pcl::io::savePCDFileASCII(dir_path + suffix + "/full_key_frames_map.pcd", *global_map);
+    pcl::io::savePCDFileASCII(dir_path_resolved + "/key_frames_positions.pcd", *frame_positions);
+    pcl::io::savePCDFileASCII(dir_path_resolved + "/key_frames_poses.pcd", *frame_poses);
+    pcl::io::savePCDFileASCII(dir_path_resolved + "/full_key_frames_map.pcd", *global_map);
 
-    std::cout << "[saveMapFramesToDisk]: Saving map files to [" << dir_path + suffix << "] completed\n";
+    // Write UUID bimap to file
+    std::ofstream ofs(dir_path_resolved + "/uuid_map.txt");
+    boost::archive::text_oarchive oa(ofs);
+    oa << frame_uuids;
+    ofs.close();
+
+    std::cout << "[saveMapFramesToDisk]: Saving map files to [" << dir_path_resolved << "] completed\n";
     std::cout << "****************************************************[saveMapFramesToDisk]****************************************************\n";
 }
 
@@ -134,11 +144,35 @@ static KeyframeMap<int> loadMapFramesFromDisk(const std::string& dir_path)
     pcl::io::loadPCDFile(dir_path + "/key_frames_positions.pcd", *frame_positions);
     pcl::io::loadPCDFile(dir_path + "/key_frames_poses.pcd", *frame_poses);
 
+    bool uuids_loaded = false;
+    boost::bimap<int, std::string> uuid_map;
+    const std::string uuid_map_path = dir_path + "/uuid_map.txt";
+    if (boost::filesystem::exists(boost::filesystem::path(uuid_map_path)))
+    {
+        // Read UUID map from file
+        std::ifstream ifs(uuid_map_path);
+        boost::archive::text_iarchive ia(ifs);
+        ia >> uuid_map;
+        ifs.close();
+
+        uuids_loaded = true;
+    }
+    else
+    {
+        ROS_INFO_STREAM("UUID map file [" << uuid_map_path << "] does not exist. Not loading...");
+    }
+
     KeyframeMap<int> frames;
     // utility::progbar bar(std::cout, 80, '=', ' ');
     for (size_t i = 0; i < frame_positions->size(); ++i)
     {
-        Keyframe<int> frame(i, frame_poses->at(i).time);
+        std::string uuid = "";
+        if ((uuids_loaded) && (uuid_map.left.find(i) != uuid_map.left.end()))
+        {
+            uuid = uuid_map.left.at(i);
+        }
+
+        Keyframe<int> frame(i, frame_poses->at(i).time, uuid);
         frame.cloud = PointCloud::Ptr(new PointCloud);
         frame.pose = toEigenPose(frame_poses->at(i));
 

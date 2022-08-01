@@ -4,154 +4,222 @@ namespace dlo
 {
 Frames::Frames(const SubmapParams& params) : params_{ params }
 {
-    init();
+    this->init();
 }
 
 Frames::Frames(const SubmapParams& params, const KeyframeMap<int>& keyframes) : params_{ params }
 {
-    init();
+    this->init();
 
-    frames_ = keyframes;
+    // Copy keyframes
+    this->frames_ = keyframes;
+
+    // Populate UUID map
+    for (const std::pair<int, Keyframe<int>> kf_pair : keyframes)
+    {
+        this->id_uuid_map_.insert({ kf_pair.second.id, kf_pair.second.uuid() });
+    }
 }
 
 void Frames::init()
 {
-    frames_.clear();
+    this->frames_.clear();
+    this->id_uuid_map_.clear();
 
+    this->map_cloud_ = PointCloud::Ptr(new PointCloud);
+    this->map_changed_ = true;
+
+    this->resetSubmapStates();
+}
+
+void Frames::resetSubmapStates()
+{
     this->submap_cloud_ = PointCloud::Ptr(new PointCloud);
     this->submap_has_changed_ = true;
+    this->submap_kf_idx_curr_.clear();
     this->submap_kf_idx_prev_.clear();
 
     this->convex_hull_.setDimension(3);
     this->concave_hull_.setDimension(3);
     this->concave_hull_.setKeepInformation(true);
 
-    submap_cloud_ = PointCloud::Ptr(new PointCloud);
-    map_cloud_ = PointCloud::Ptr(new PointCloud);
-
-    map_changed_ = true;
-    submap_has_changed_ = true;
+    this->keyframe_convex_.clear();
+    this->keyframe_concave_.clear();
 }
 
 Frames::~Frames()
 {
-    submap_cloud_.reset();
+    this->submap_cloud_.reset();
 }
 
-bool Frames::addFrame(const Keyframe<int>& frame)
+bool Frames::add(const Keyframe<int>& frame)
 {
-    if (frames_.find(frame.id) != frames_.end())
+    if (this->frames_.find(frame.id) != this->frames_.end())
     {
         return false;
     }
 
-    frames_.insert({ frame.id, frame });
+    this->frames_.insert({ frame.id, frame });
+    this->id_uuid_map_.insert({ frame.id, frame.uuid() });
 
-    if (map_cloud_->empty())
+    if (this->map_cloud_->empty())
     {
-        map_cloud_ = PointCloud::Ptr(new PointCloud);
+        this->map_cloud_ = PointCloud::Ptr(new PointCloud);
     }
 
-    *map_cloud_ += *frame.getTransformedCloud();
+    *this->map_cloud_ += *frame.getTransformedCloud();
     return true;
 }
 
-void Frames::removeFrame(const unsigned int& idx)
+Keyframe<int> Frames::frame(const unsigned int idx) const
 {
-    if (frames_.find(idx) == frames_.end())
+    if (this->frames_.find(idx) == frames_.end())
     {
-        return;
+        return {};
     }
 
-    map_changed_ = true;
-    frames_.erase(idx);
+    return this->frames_.at(idx);
+}
+
+Keyframe<int> Frames::frame(const std::string& uuid) const
+{
+    if (this->id_uuid_map_.right.find(uuid) == this->id_uuid_map_.right.end())
+    {
+        return {};
+    }
+
+    return this->frame(this->id_uuid_map_.right.at(uuid));
+}
+
+KeyframeMap<int> Frames::frames() const
+{
+    return this->frames_;
+}
+
+KeyframeMap<int> Frames::operator()() const
+{
+    return this->frames_;
+}
+
+bool Frames::submapHasChanged() const
+{
+    return this->submap_has_changed_;
+}
+
+PointCloud::Ptr Frames::submapCloud() const
+{
+    return this->submap_cloud_;
+}
+
+FrameNormals Frames::submapNormals() const
+{
+    return this->submap_normals_;
+}
+
+unsigned int Frames::size() const
+{
+    return this->frames_.size();
+}
+
+bool Frames::empty() const
+{
+    return this->frames_.empty();
+}
+
+void Frames::setCvHullAlpha(double alpha)
+{
+    this->concave_hull_.setAlpha(alpha);
 }
 
 bool Frames::setFramePose(const unsigned int idx, const Eigen::Isometry3f& pose)
 {
-    if (frames_.find(idx) == frames_.end())
+    if (this->frames_.find(idx) == this->frames_.end())
     {
         return false;
     }
 
-    if (frames_.at(idx).pose.isApprox(pose, 1e-6))
-    {
-        return false;
-    }
-
-    frames_.at(idx).pose = pose;
-    map_changed_ = true;
+    this->frames_.at(idx).pose = pose;
+    this->map_changed_ = true;
 
     return true;
 }
 
-Eigen::Isometry3f Frames::getFramePose(const unsigned int idx) const
+PointCloud::Ptr Frames::mapCloud()
 {
-    if (frames_.find(idx) == frames_.end())
+    if (this->map_changed_)
     {
-        return {};
+        this->buildMap();
     }
 
-    return frames_.at(idx).pose;
+    return this->map_cloud_;
 }
 
-PointCloud::Ptr Frames::getFrameCloud(const unsigned int idx) const
+PointCloud::Ptr Frames::mapCloudDS(const double leaf_size)
 {
-    if (frames_.find(idx) == frames_.end())
+    if (this->map_changed_)
     {
-        return {};
-    }
-
-    return frames_.at(idx).cloud;
-}
-
-FrameNormals Frames::getFrameNormals(const unsigned int idx) const
-{
-    if (frames_.find(idx) == frames_.end())
-    {
-        return {};
-    }
-
-    return frames_.at(idx).normals;
-}
-
-PointCloud::Ptr Frames::getMap()
-{
-    if (map_changed_)
-    {
-        buildMap();
-    }
-
-    return map_cloud_;
-}
-
-PointCloud::Ptr Frames::getMapDS(const double leaf_size)
-{
-    if (map_changed_)
-    {
-        buildMap();
+        this->buildMap();
     }
 
     PointCloud::Ptr map_cloud_ds(new PointCloud);
 
-    voxelgrid.setLeafSize(leaf_size, leaf_size, leaf_size);
-    voxelgrid.setInputCloud(map_cloud_);
-    voxelgrid.filter(*map_cloud_ds);
+    this->voxelgrid.setLeafSize(leaf_size, leaf_size, leaf_size);
+    this->voxelgrid.setInputCloud(map_cloud_);
+    this->voxelgrid.filter(*map_cloud_ds);
 
     return map_cloud_ds;
 }
 
 void Frames::buildMap()
 {
-    map_cloud_.reset();
-    map_cloud_ = PointCloud::Ptr(new PointCloud);
+    this->map_cloud_.reset();
+    this->map_cloud_ = PointCloud::Ptr(new PointCloud);
 
-    for (auto kf_pair : frames_)
+    for (auto kf_pair : this->frames_)
     {
-        *map_cloud_ += *kf_pair.second.getTransformedCloud();
+        *this->map_cloud_ += *kf_pair.second.getTransformedCloud();
     }
 
-    map_changed_ = false;
+    this->map_changed_ = false;
+}
+
+std::pair<bool, int> Frames::getClosestFrameId(Eigen::Vector3f pose)
+{
+    float min_dist = std::numeric_limits<float>::max();
+    int min_dist_idx = -1;
+    bool found = false;
+    for (const auto kf_pair : this->frames_)
+    {
+        float dist = (kf_pair.second.pose.translation() - pose).norm();
+        if (dist < min_dist)
+        {
+            min_dist = dist;
+            min_dist_idx = kf_pair.second.id;
+            found = true;
+        }
+    }
+
+    if (found)
+    {
+        return { true, min_dist_idx };
+    }
+
+    return { false, -1 };
+}
+
+std::pair<bool, Keyframe<int>> Frames::getClosestFrame(Eigen::Vector3f pose)
+{
+    std::pair<bool, int> frame_id = this->getClosestFrameId(pose);
+    if (frame_id.first)
+    {
+        Keyframe<int> frame = this->frame(frame_id.second);
+        if (frame.id == frame_id.second)
+        {
+            return { true, frame };
+        }
+    }
+
+    return { false, {} };
 }
 
 void Frames::buildSubmap(Eigen::Vector3f curr_pose)
