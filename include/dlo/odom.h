@@ -44,6 +44,9 @@
 // PCL library includes
 #include <pcl/common/transforms.h>
 
+// TF libary includes
+#include <tf2_ros/static_transform_broadcaster.h>
+
 // c++ standard library includes
 #include <memory>
 

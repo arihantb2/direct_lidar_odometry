@@ -1658,6 +1658,20 @@ bool OdomNode::getCurrentWaypointCallback(er_nav_msgs::GetCurrentWaypoint::Reque
     response.waypoint_pose.header.frame_id = this->map_frame;
     response.waypoint_pose.pose = toRosMsg(frame_result.second.pose);
 
+    static tf2_ros::StaticTransformBroadcaster br;
+    geometry_msgs::TransformStamped transform_stamped;
+
+    transform_stamped.header = response.waypoint_pose.header;
+    transform_stamped.header.frame_id = this->map_frame;
+    transform_stamped.child_frame_id = response.waypoint_frame;
+
+    transform_stamped.transform.translation.x = response.waypoint_pose.pose.position.x;
+    transform_stamped.transform.translation.y = response.waypoint_pose.pose.position.y;
+    transform_stamped.transform.translation.z = response.waypoint_pose.pose.position.z;
+    transform_stamped.transform.rotation = response.waypoint_pose.pose.orientation;
+
+    br.sendTransform(transform_stamped);
+
     return true;
 }
 
@@ -1676,6 +1690,20 @@ bool OdomNode::getWaypointByIdCallback(er_nav_msgs::GetWaypointById::Request& re
     response.waypoint_pose.header.stamp = ros::Time(frame.timestamp);
     response.waypoint_pose.header.frame_id = this->map_frame;
     response.waypoint_pose.pose = toRosMsg(frame.pose);
+
+    static tf2_ros::StaticTransformBroadcaster br;
+    geometry_msgs::TransformStamped transform_stamped;
+
+    transform_stamped.header = response.waypoint_pose.header;
+    transform_stamped.header.frame_id = this->map_frame;
+    transform_stamped.child_frame_id = request.waypoint_frame;
+
+    transform_stamped.transform.translation.x = response.waypoint_pose.pose.position.x;
+    transform_stamped.transform.translation.y = response.waypoint_pose.pose.position.y;
+    transform_stamped.transform.translation.z = response.waypoint_pose.pose.position.z;
+    transform_stamped.transform.rotation = response.waypoint_pose.pose.orientation;
+
+    br.sendTransform(transform_stamped);
 
     return true;
 }
