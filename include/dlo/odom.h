@@ -229,6 +229,8 @@ private:
     std::string baselink_frame;
     std::string lidar_frame;
 
+    bool publish_keyframe_tf;
+
     pcl::PointCloud<PointType>::Ptr original_scan;
     pcl::PointCloud<PointType>::Ptr current_scan;
 

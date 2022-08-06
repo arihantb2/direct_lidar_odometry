@@ -16,6 +16,7 @@ dlo:
   imu: true
   gravityAlign: false
   trajectoryOptimization: false
+  publishKeyframeTF: false
 
   mode: 1 # 0: LOCALIZATION, 1: SLAM
   mapName: ""
