@@ -25,6 +25,7 @@
   <depend>eigen_conversions</depend>
   <depend>er_nav_msgs</depend>
   <depend>er_file_io_msgs</depend>
+  <depend>er_file_io</depend>
   <depend>pcl_conversions</depend>
 
   <export>

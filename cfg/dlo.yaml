@@ -16,9 +16,8 @@ dlo:
   imu: true
   gravityAlign: false
   trajectoryOptimization: false
-  publishKeyframeTF: false
+  publishKeyframeTF: true
 
-  mode: 1 # 0: LOCALIZATION, 1: SLAM
   mapName: ""
   mapDirectory: "/mnt/usb_data/site_data/maps"
 

@@ -31,7 +31,7 @@ bool resetCallback(er_nav_msgs::SetLocalizationState::Request& request, er_nav_m
 
     // Delete odom node and create new object
     odom_node_ptr.reset();
-    odom_node_ptr = std::make_unique<dlo::OdomNode>(ros::NodeHandle("~"));
+    odom_node_ptr = std::make_unique<dlo::OdomNode>(ros::NodeHandle("~"), false);
 
     if (!request.file_tag.empty())
     {
@@ -61,7 +61,12 @@ int main(int argc, char** argv)
     signal(SIGTERM, controlC);
     sleep(0.5);
 
-    odom_node_ptr = std::make_unique<dlo::OdomNode>(nh);
+    odom_node_ptr = std::make_unique<dlo::OdomNode>(nh, true);
+    if (!odom_node_ptr->mapName().empty())
+    {
+        // Load map
+        odom_node_ptr->loadMap(odom_node_ptr->mapName());
+    }
     odom_node_ptr->start();
 
     ros::ServiceServer reset_odom_server = nh.advertiseService("/localization/reset", &resetCallback);

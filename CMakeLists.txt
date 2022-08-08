@@ -56,6 +56,7 @@ set(CATKIN_PACKAGE_DEPS
   eigen_conversions
   er_nav_msgs
   er_file_io_msgs
+  er_file_io
 )
 
 find_package(catkin REQUIRED COMPONENTS ${CATKIN_PACKAGE_DEPS})
@@ -101,13 +102,13 @@ target_include_directories(frames PUBLIC include ${PCL_INCLUDE_DIRS} ${EIGEN3_IN
 add_executable(dlo_odom_node src/dlo/odom_node.cc src/dlo/odom.cc)
 add_dependencies(dlo_odom_node ${catkin_EXPORTED_TARGETS})
 target_compile_options(dlo_odom_node PRIVATE ${OpenMP_FLAGS})
-target_link_libraries(dlo_odom_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${Boost_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp gtsam frames)
+target_link_libraries(dlo_odom_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${Boost_LIBRARIES} ${OpenMP_LIBS} Threads::Threads nano_gicp gtsam frames yaml-cpp)
 
-# Mapping Node
-add_executable(dlo_map_node src/dlo/map_node.cc src/dlo/map.cc)
-add_dependencies(dlo_map_node ${catkin_EXPORTED_TARGETS})
-target_compile_options(dlo_map_node PRIVATE ${OpenMP_FLAGS})
-target_link_libraries(dlo_map_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads)
+# # Mapping Node
+# add_executable(dlo_map_node src/dlo/map_node.cc src/dlo/map.cc)
+# add_dependencies(dlo_map_node ${catkin_EXPORTED_TARGETS})
+# target_compile_options(dlo_map_node PRIVATE ${OpenMP_FLAGS})
+# target_link_libraries(dlo_map_node ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenMP_LIBS} Threads::Threads)
 
 # Tests
 add_executable(test_nano_gicp src/test/test_nano_gicp.cpp)
@@ -138,7 +139,7 @@ install(
 
     # Executables
     dlo_odom_node
-    dlo_map_node
+    # dlo_map_node
 
   ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
   LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}

@@ -12,6 +12,9 @@
 #include <frames/frames.h>
 #include <frames/map_io.h>
 
+// Internal library includes
+#include <er_file_io/er_file_io.h>
+
 // Internal message types includes
 #include <er_nav_msgs/GetCurrentWaypoint.h>
 #include <er_nav_msgs/GetWaypointById.h>
@@ -50,6 +53,9 @@
 // c++ standard library includes
 #include <memory>
 
+// YAML library includes
+#include <yaml-cpp/yaml.h>
+
 namespace dlo
 {
 template <typename T>
@@ -87,10 +93,23 @@ private:
     std::unique_ptr<T> value;
 };
 
+struct PersistentState
+{
+    PersistentState() : initialized_{ false }, map_name_{ "" }, save_timestamp_{ -1 }, pose_timestamp_{ -1 }, pose_{ Eigen::Isometry3f::Identity() }
+    {
+    }
+
+    bool initialized_;
+    std::string map_name_;
+    double save_timestamp_;
+    double pose_timestamp_;
+    Eigen::Isometry3f pose_;
+};
+
 class OdomNode
 {
 public:
-    OdomNode(ros::NodeHandle node_handle);
+    OdomNode(ros::NodeHandle node_handle, bool reload_persistent_state = true);
     ~OdomNode();
 
     static void abort()
@@ -134,7 +153,6 @@ private:
 
     bool saveCallback(er_file_io_msgs::HandleFile::Request& request, er_file_io_msgs::HandleFile::Response& response);
     bool loadCallback(er_file_io_msgs::HandleFile::Request& request, er_file_io_msgs::HandleFile::Response& response);
-    bool resetCallback(er_nav_msgs::SetLocalizationState::Request& request, er_nav_msgs::SetLocalizationState::Response& response);
     bool getCurrentWaypointCallback(er_nav_msgs::GetCurrentWaypoint::Request& request, er_nav_msgs::GetCurrentWaypoint::Response& response);
     bool getWaypointByIdCallback(er_nav_msgs::GetWaypointById::Request& request, er_nav_msgs::GetWaypointById::Response& response);
 
@@ -180,11 +198,22 @@ private:
 
     void optimizeTrajectory();
 
+    void persistentStateTimer(const ros::TimerEvent& event);
+    void writePersistentState(const PersistentState& state);
+    OptionalValue<PersistentState> readPersistentState();
+    bool validatePersistentState(const PersistentState& state);
+    PersistentState getState();
+
     double first_imu_time;
 
     ros::NodeHandle nh;
     ros::Timer abort_timer;
     ros::Timer map_publish_timer;
+
+    ros::Timer persistent_state_timer_;
+    std::string persistent_state_filename_;
+    double persistent_state_reload_timeout_;
+    std::shared_ptr<er_file_io::PersistentFileHandler> persistent_file_handler_;
 
     ros::Subscriber icp_sub;
     ros::Subscriber imu_sub;

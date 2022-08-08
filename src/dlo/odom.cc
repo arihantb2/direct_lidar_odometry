@@ -17,7 +17,7 @@ std::atomic<bool> OdomNode::abort_(false);
  * Constructor
  **/
 
-OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
+OdomNode::OdomNode(ros::NodeHandle node_handle, bool reload_persistent_state) : nh(node_handle)
 {
     this->getParams();
 
@@ -40,9 +40,30 @@ OdomNode::OdomNode(ros::NodeHandle node_handle) : nh(node_handle)
     this->get_current_waypoint_service = this->nh.advertiseService("/localization/get_current_waypoint", &OdomNode::getCurrentWaypointCallback, this);
     this->get_waypoint_by_id_service = this->nh.advertiseService("/localization/get_waypoint_by_id", &OdomNode::getWaypointByIdCallback, this);
 
-    this->imu_calibrated = false;
-
     this->init();
+
+    this->persistent_file_handler_ = std::make_shared<er_file_io::PersistentFileHandler>(persistent_state_filename_, ros::this_node::getName());
+    if (reload_persistent_state)
+    {
+        std::cout << "[OdomNode]: Checking persistent robot state\n";
+        OptionalValue<PersistentState> state = this->readPersistentState();
+        bool reload_state = state && validatePersistentState(state());
+        if (reload_state)
+        {
+            std::cout << "[OdomNode]: Loading persistent state from file\n";
+
+            this->initial_position_ = state().pose_.translation();
+            this->initial_orientation_ = Eigen::Quaternionf(state().pose_.rotation());
+            this->loadMap(state().map_name_);
+        }
+    }
+    else
+    {
+        std::cout << "[OdomNode]: Load persistent state is disabled by the \"~dlo/load_persistent_state\" param \n";
+    }
+
+    // Initialize persistent file handler
+    this->persistent_state_timer_ = this->nh.createTimer(ros::Duration(1.0), &OdomNode::persistentStateTimer, this);
 }
 
 /**
@@ -99,6 +120,11 @@ void OdomNode::getParams()
 {
     // Version
     this->paramLoadHelper<std::string>("dlo/version", this->version_, "0.0.0");
+
+    // Initialize persistent state handler
+    std::string default_persistent_filename = std::string(std::getenv("HOME")) + "/.persistent_robot_state.yaml";
+    this->paramLoadHelper<std::string>("dlo/persistentStateFilename", this->persistent_state_filename_, default_persistent_filename);
+    this->paramLoadHelper<double>("dlo/persistentStateReloadTimeout", this->persistent_state_reload_timeout_, 10.0 * 60);  // 10 minutes
 
     // Frames
     this->paramLoadHelper<std::string>("dlo/odomNode/mapFrame", this->map_frame, "map");
@@ -212,6 +238,7 @@ void OdomNode::getParams()
 void OdomNode::init()
 {
     this->dlo_initialized = false;
+    this->imu_calibrated = false;
 
     // Initialize class variables
     this->T = Eigen::Matrix4f::Identity();
@@ -1572,67 +1599,6 @@ bool OdomNode::loadCallback(er_file_io_msgs::HandleFile::Request& request, er_fi
     return false;
 }
 
-bool OdomNode::resetCallback(er_nav_msgs::SetLocalizationState::Request& request, er_nav_msgs::SetLocalizationState::Response& response)
-{
-    std::cout << "[dlo::OdomNode::resetCallback]: Requested new map [" << request.file_tag << "], current map [" << this->map_name << "] with ["
-              << this->keyframes->size() << "] keyframes will be cleared\n";
-
-    if (!request.file_tag.empty() && request.file_tag != this->map_name)
-    {
-        // Stop sensor data subscribers
-        std::cout << "[dlo::OdomNode::resetCallback]: Stopping subscribers to sensor data ...\n";
-        this->stopSubscribers();
-
-        // Reset and init class variables
-        // NOTE: This resets the current pose to origin and clears the keyframes
-        this->init();
-
-        // Load new map
-        if (this->loadMap(request.file_tag))
-        {
-            std::cout << "[dlo::OdomNode::resetCallback]: Loaded new map [" << request.file_tag << "]\n";
-        }
-        else
-        {
-            std::cout << "[dlo::OdomNode::resetCallback]: Reset map\n";
-        }
-
-        // Start sensor data subscribers
-        std::cout << "[dlo::OdomNode::resetCallback]: Starting subscribers to sensor data ...\n";
-        this->startSubscribers();
-
-        response.success = true;
-    }
-    else if (request.file_tag.empty())
-    {
-        // Stop sensor data subscribers
-        std::cout << "[dlo::OdomNode::resetCallback]: Stopping subscribers to sensor data ...\n";
-        this->stopSubscribers();
-
-        // Reset map name
-        this->map_name.clear();
-
-        // Reset and init class variables
-        // NOTE: This resets the current pose to origin and clears the keyframes
-        this->init();
-
-        std::cout << "[dlo::OdomNode::resetCallback]: Cleared map and recording new map\n";
-
-        // Start sensor data subscribers
-        std::cout << "[dlo::OdomNode::resetCallback]: Starting subscribers to sensor data ...\n";
-        this->startSubscribers();
-
-        response.success = true;
-    }
-    else
-    {
-        std::cout << "Requested map [" << request.file_tag << "] is already the loaded map. Doing nothing\n";
-        response.success = true;
-    }
-
-    return true;
-}
-
 bool OdomNode::getCurrentWaypointCallback(er_nav_msgs::GetCurrentWaypoint::Request& request, er_nav_msgs::GetCurrentWaypoint::Response& response)
 {
     if (!dlo_initialized)
@@ -1789,6 +1755,183 @@ bool OdomNode::vectorParamLoadHelper(const char* param_namespace, std::vector<Ty
         ROS_WARN_STREAM("[" << ros::this_node::getName() << "]: Vector parameter at namespace: [" << param_namespace
                             << "] is of wrong size. Using default value");
         param = def_param;
+        return false;
+    }
+
+    return true;
+}
+
+PersistentState OdomNode::getState()
+{
+    PersistentState state;
+
+    if (!dlo_initialized)
+    {
+        state.initialized_ = false;
+        return state;
+    }
+
+    state.initialized_ = true;
+    state.map_name_ = this->map_name;
+    state.pose_ = Eigen::Isometry3f(this->T);
+    state.pose_timestamp_ = this->scan_stamp.toSec();
+
+    return state;
+}
+
+void OdomNode::persistentStateTimer(const ros::TimerEvent& event)
+{
+    PersistentState state = this->getState();
+
+    if (state.initialized_ == false)
+    {
+        return;
+    }
+
+    writePersistentState(state);
+}
+
+void OdomNode::writePersistentState(const PersistentState& state)
+{
+    double now = std::chrono::high_resolution_clock::now().time_since_epoch().count() / 1e9;
+
+    YAML::Emitter out;
+    out << YAML::BeginMap;
+
+    out << YAML::Key << "initialized" << YAML::Value << state.initialized_;
+    out << YAML::Key << "map_name" << YAML::Value << state.map_name_;
+    out << YAML::Key << "save_timestamp" << YAML::Value << now;
+    out << YAML::Key << "pose_timestamp" << YAML::Value << state.pose_timestamp_;
+
+    float x, y, z, roll, pitch, yaw;
+    pcl::getTranslationAndEulerAngles(state.pose_, x, y, z, roll, pitch, yaw);
+
+    // clang-format off
+    out << YAML::Key << "pose";
+    out << YAML::Value << YAML::BeginMap;
+    out << YAML::Key << "x" << YAML::Value << x
+        << YAML::Key << "y" << YAML::Value << y
+        << YAML::Key << "z" << YAML::Value << z
+        << YAML::Key << "roll" << YAML::Value << roll
+        << YAML::Key << "pitch" << YAML::Value << pitch
+        << YAML::Key << "yaw" << YAML::Value << yaw
+        << YAML::EndMap;
+    // clang-format on
+
+    out << YAML::EndMap;
+
+    persistent_file_handler_->writeToFile(out.c_str());
+}
+
+OptionalValue<PersistentState> OdomNode::readPersistentState()
+{
+    PersistentState state;
+    std::pair<bool, YAML::Node> read_file_result = persistent_file_handler_->readFromFile();
+
+    if (read_file_result.first == false)
+    {
+        return {};
+    }
+
+    YAML::Node node = read_file_result.second;
+    if (node.Type() != YAML::NodeType::Map)
+    {
+        return {};
+    }
+
+    if (node["initialized"])
+    {
+        state.initialized_ = node["initialized"].as<bool>();
+    }
+    else
+    {
+        ROS_ERROR_STREAM("[OdomNode::readPersistentState]: File " << persistent_state_filename_ << " does not contain initialized");
+        return {};
+    }
+
+    if (node["map_name"])
+    {
+        state.map_name_ = node["map_name"].as<std::string>();
+    }
+    else
+    {
+        ROS_WARN_STREAM("[OdomNode::readPersistentState]: File " << persistent_state_filename_ << " does not contain map name. Setting it to empty string");
+        state.map_name_ = "";
+    }
+
+    if (node["save_timestamp"])
+    {
+        state.save_timestamp_ = node["save_timestamp"].as<double>();
+    }
+    else
+    {
+        ROS_ERROR_STREAM("[OdomNode::readPersistentState]: File " << persistent_state_filename_ << " does not contain a timestamp");
+        return {};
+    }
+
+    if (node["pose_timestamp"])
+    {
+        state.pose_timestamp_ = node["pose_timestamp"].as<double>();
+    }
+    else
+    {
+        ROS_ERROR_STREAM("[OdomNode::readPersistentState]: File " << persistent_state_filename_ << " does not contain a timestamp");
+        return {};
+    }
+
+    if (node["pose"])
+    {
+        YAML::Node pose = node["pose"];
+        if (pose["x"] && pose["y"] && pose["z"] && pose["roll"] && pose["pitch"] && pose["yaw"])
+        {
+            Eigen::Affine3f pose_eigen;
+            pcl::getTransformation(pose["x"].as<float>(), pose["y"].as<float>(), pose["z"].as<float>(), pose["roll"].as<float>(), pose["pitch"].as<float>(),
+                                   pose["yaw"].as<float>(), pose_eigen);
+
+            state.pose_ = Eigen::Isometry3f(pose_eigen.matrix());
+        }
+        else
+        {
+            ROS_ERROR_STREAM("[OdomNode::readPersistentState]: File " << persistent_state_filename_ << " does not contain a valid current pose estimate");
+            return {};
+        }
+    }
+    else
+    {
+        ROS_WARN_STREAM("[OdomNode::readPersistentState]: File " << persistent_state_filename_
+                                                                 << " does not contain a current pose estimate. Setting it to identity pose");
+        state.pose_.setIdentity();
+    }
+
+    double now = std::chrono::high_resolution_clock::now().time_since_epoch().count() / 1e9;
+    if (abs(now - state.save_timestamp_) > persistent_state_reload_timeout_)
+    {
+        ROS_INFO_STREAM("[OdomNode::readPersistentState]: File [" << persistent_state_filename_ << "] is older than " << persistent_state_reload_timeout_
+                                                                  << " seconds");
+        return {};
+    }
+
+    return state;
+}
+
+bool OdomNode::validatePersistentState(const PersistentState& state)
+{
+    if (!state.initialized_)
+    {
+        std::cout << "[OdomNode::validatePersistentState]: State loaded from file is not valid. Will not load persistent state\n";
+        return false;
+    }
+
+    if (state.map_name_.empty())
+    {
+        std::cout << "[OdomNode::validatePersistentState]: Map name loaded from file is empty. Will not load persistent state\n";
+        return false;
+    }
+
+    std::string map_path = this->map_directory + "/" + state.map_name_;
+    if (!boost::filesystem::exists(map_path) || !boost::filesystem::is_directory(map_path))
+    {
+        std::cout << "[OdomNode::validatePersistentState]: Map loaded from file [" << map_path << "] does not exist. Will not load persistent state\n";
         return false;
     }
 
